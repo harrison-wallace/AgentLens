@@ -7,9 +7,8 @@ Prerequisites:
 - Node (version pinned in [`.nvmrc`](.nvmrc))
 - Rust stable (pinned via [`rust-toolchain.toml`](rust-toolchain.toml)), with
   `rustfmt` and `clippy` components
-- **Ubuntu only:** `libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev
-patchelf build-essential curl wget file libxdo-dev libssl-dev
-libayatana-appindicator3-dev`
+- **Ubuntu only:** `libwebkit2gtk-4.1-dev libayatana-appindicator3-dev
+librsvg2-dev patchelf build-essential curl wget file libxdo-dev libssl-dev`
 - **Windows:** the [Tauri v2 prerequisites](https://tauri.app/start/prerequisites/)
   (WebView2, MSVC build tools)
 

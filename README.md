@@ -41,8 +41,8 @@ Prerequisites:
 - Node (version pinned in [`.nvmrc`](.nvmrc))
 - Rust stable (pinned via [`rust-toolchain.toml`](rust-toolchain.toml))
 - On Ubuntu, the Tauri v2 system packages: `libwebkit2gtk-4.1-dev
-libappindicator3-dev librsvg2-dev patchelf build-essential curl wget file
-libxdo-dev libssl-dev libayatana-appindicator3-dev`
+libayatana-appindicator3-dev librsvg2-dev patchelf build-essential curl wget
+file libxdo-dev libssl-dev`
 
 ```sh
 npm install
