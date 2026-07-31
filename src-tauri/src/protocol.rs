@@ -15,6 +15,65 @@ pub struct AppInfo {
     pub version: String,
 }
 
+/// The result type for every `#[tauri::command]`, so the error shape is
+/// uniform across the UI <-> backend boundary.
+pub type CommandResult<T> = Result<T, String>;
+
+/// The currently open workspace.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceInfo {
+    /// Absolute path, forward slashes, for display.
+    pub root: String,
+    /// Final path component.
+    pub name: String,
+    /// Unix epoch milliseconds.
+    pub watching_since: i64,
+}
+
+/// One entry in a single directory listing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirEntryNode {
+    pub name: String,
+    /// Workspace-relative, forward slashes.
+    pub path: String,
+    pub is_dir: bool,
+}
+
+/// How git sees one file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GitStatusKind {
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+    Untracked,
+    Conflicted,
+}
+
+/// Git status of a single file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitFileStatus {
+    /// Workspace-relative, forward slashes.
+    pub path: String,
+    pub status: GitStatusKind,
+    /// True if the change is in the index.
+    pub staged: bool,
+}
+
+/// A full git status snapshot for the open workspace.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitStatusSnapshot {
+    pub is_repository: bool,
+    /// `None` when detached or unborn.
+    pub branch: Option<String>,
+    pub files: Vec<GitFileStatus>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
