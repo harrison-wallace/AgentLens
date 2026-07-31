@@ -5,7 +5,9 @@ read-only window into what your terminal coding agent (Claude Code, opencode,
 …) is doing to a directory: live file tree, change feed, git status,
 read-only previews. Runs on Windows and Ubuntu.
 
-**Status:** v0.0.1 — pre-alpha. Phase 0 (scaffolding) complete; no features yet.
+**Status:** v0.0.2 — pre-alpha. Open a folder and browse its file tree with git
+status decorations. The filesystem watcher, activity feed, and previews are
+still to come, so the view only updates when you hit Refresh.
 
 <!-- TODO: screenshot once Phase 1 (local observer) lands -->
 
@@ -19,13 +21,13 @@ real editor; AgentLens stays out of the way.
 
 ## Roadmap
 
-| Phase | Description                                                                        | Status  |
-| ----- | ---------------------------------------------------------------------------------- | ------- |
-| 0     | Scaffolding — app skeleton, CI on Windows + Ubuntu, release pipeline               | Done    |
-| 1     | Local observer MVP — file tree, gitignore-aware watcher, activity feed, git status | Planned |
-| 2     | Agent integration — agent transcript tailing, file-event ↔ tool-call correlation   | Planned |
-| 3     | Git actions + polish — stage/commit/branch/stash, diff view, command palette       | Planned |
-| 4     | Remote — headless daemon for WSL-from-Windows and SSH                              | Planned |
+| Phase | Description                                                                        | Status      |
+| ----- | ---------------------------------------------------------------------------------- | ----------- |
+| 0     | Scaffolding — app skeleton, CI on Windows + Ubuntu, release pipeline               | Done        |
+| 1     | Local observer MVP — file tree, gitignore-aware watcher, activity feed, git status | In progress |
+| 2     | Agent integration — agent transcript tailing, file-event ↔ tool-call correlation   | Planned     |
+| 3     | Git actions + polish — stage/commit/branch/stash, diff view, command palette       | Planned     |
+| 4     | Remote — headless daemon for WSL-from-Windows and SSH                              | Planned     |
 
 ## Install
 

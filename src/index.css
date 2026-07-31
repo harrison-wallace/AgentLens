@@ -8,6 +8,19 @@
   --color-text: #e6e9ee;
   --color-text-muted: #8b94a3;
   --color-accent: #5b9dff;
+
+  /* interaction */
+  --color-hover: #1a1f26;
+  --color-selected: #1e2a3d;
+  --color-danger: #f87171;
+
+  /* git status badges */
+  --color-git-added: #4ade80;
+  --color-git-modified: #fbbf24;
+  --color-git-deleted: #f87171;
+  --color-git-renamed: #60a5fa;
+  --color-git-untracked: #a78bfa;
+  --color-git-conflicted: #fb923c;
 }
 
 html,
