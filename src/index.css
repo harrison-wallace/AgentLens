@@ -1,0 +1,22 @@
+@import "tailwindcss";
+
+@theme {
+  /* dark-first design tokens */
+  --color-surface: #0d0f12;
+  --color-surface-raised: #14181d;
+  --color-border: #232a32;
+  --color-text: #e6e9ee;
+  --color-text-muted: #8b94a3;
+  --color-accent: #5b9dff;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background-color: var(--color-surface);
+  color: var(--color-text);
+}

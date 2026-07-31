@@ -1,0 +1,22 @@
+/docs/plans/
+/docs/PLAN.md
+AGENTS.md
+CLAUDE.md
+
+# Node
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# Misc
+*.local
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+coverage/
