@@ -1,13 +1,17 @@
 import { useEffect, useMemo, useRef } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useGitStore } from "../stores/gitStore";
+import { useSettingsStore } from "../stores/settingsStore";
 import { useTreeStore } from "../stores/treeStore";
 import { flattenTree, gitBadgeFor, type TreeRow } from "../lib/treeRows";
-import type { GitStatusKind } from "../lib/protocol";
+import type { GitStatusKind, PinnedEntry } from "../lib/protocol";
 
 const ROW_HEIGHT = 24;
 /** How often the single glow-pruning timer ticks. */
 const GLOW_PRUNE_INTERVAL_MS = 5_000;
+/** Filled once pinned, hollow as the hover affordance. */
+const PIN_ON = "✦";
+const PIN_OFF = "✧";
 
 type DisplayRow =
   { kind: "node"; row: TreeRow } | { kind: "error"; path: string; depth: number; message: string };
@@ -31,6 +35,8 @@ export default function FileTree() {
   const select = useTreeStore((s) => s.select);
   const recentlyChanged = useTreeStore((s) => s.recentlyChanged);
   const statusByPath = useGitStore((s) => s.statusByPath);
+  const pinnedPaths = useSettingsStore((s) => s.settings.pinned);
+  const togglePin = useSettingsStore((s) => s.togglePin);
 
   const collapse = useTreeStore((s) => s.collapse);
   const parentRef = useRef<HTMLDivElement>(null);
@@ -57,6 +63,8 @@ export default function FileTree() {
     }
     return rows;
   }, [childrenByPath, expanded, errors]);
+
+  const pinned = useMemo(() => new Set(pinnedPaths), [pinnedPaths]);
 
   const virtualizer = useVirtualizer({
     count: displayRows.length,
@@ -125,98 +133,218 @@ export default function FileTree() {
         if (row?.isDir) toggle(row.path);
         else if (row) select(row.path, false);
         break;
+      // Bare `p`: the tree is not a text field, and `Ctrl+P` is the file jump.
+      case "p":
+      case "P":
+        if (event.ctrlKey || event.metaKey || !row) break;
+        event.preventDefault();
+        void togglePin(row.path);
+        break;
       default:
         break;
     }
   };
 
   return (
-    <div
-      ref={parentRef}
-      tabIndex={0}
-      onKeyDown={onKeyDown}
-      aria-label="File tree"
-      className="h-full min-h-0 overflow-y-auto focus:outline-none"
-    >
-      <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
-        {virtualizer.getVirtualItems().map((item) => {
-          const display = displayRows[item.index];
-          if (!display) return null;
+    <div className="flex h-full min-h-0 flex-col">
+      <PinnedGroup />
+      <div
+        ref={parentRef}
+        tabIndex={0}
+        onKeyDown={onKeyDown}
+        role="tree"
+        aria-label="File tree"
+        className="min-h-0 flex-1 overflow-y-auto focus:outline-none"
+      >
+        <div
+          role="presentation"
+          style={{ height: virtualizer.getTotalSize(), position: "relative" }}
+        >
+          {virtualizer.getVirtualItems().map((item) => {
+            const display = displayRows[item.index];
+            if (!display) return null;
 
-          const commonStyle = {
-            position: "absolute" as const,
-            top: 0,
-            left: 0,
-            width: "100%",
-            height: ROW_HEIGHT,
-            transform: `translateY(${item.start}px)`,
-          };
+            const commonStyle = {
+              position: "absolute" as const,
+              top: 0,
+              left: 0,
+              width: "100%",
+              height: ROW_HEIGHT,
+              transform: `translateY(${item.start}px)`,
+            };
 
-          if (display.kind === "error") {
+            if (display.kind === "error") {
+              return (
+                <div
+                  key={`error:${display.path}`}
+                  role="none"
+                  style={{ ...commonStyle, paddingLeft: display.depth * 14 + 8 }}
+                  className="flex items-center truncate text-xs text-danger"
+                  title={display.message}
+                >
+                  {display.message}
+                </div>
+              );
+            }
+
+            const row = display.row;
+            const isExpanded = row.isDir && expanded.has(row.path);
+            const isLoading = row.isDir && loading.has(row.path);
+            const isSelected = selected === row.path;
+            const isRecentlyChanged = row.path in recentlyChanged;
+            const isPinned = pinned.has(row.path);
+            const statusKind = statusByPath[row.path];
+            const badge = gitBadgeFor(row.path, statusByPath);
+
             return (
               <div
-                key={`error:${display.path}`}
-                style={{ ...commonStyle, paddingLeft: display.depth * 14 + 8 }}
-                className="flex items-center truncate text-xs text-danger"
-                title={display.message}
+                key={row.path}
+                role="treeitem"
+                aria-level={row.depth + 1}
+                aria-selected={isSelected}
+                aria-expanded={row.isDir ? isExpanded : undefined}
+                onClick={() => {
+                  select(row.path, row.isDir);
+                  if (row.isDir) toggle(row.path);
+                }}
+                title={row.path}
+                style={{ ...commonStyle, paddingLeft: row.depth * 14 + 8 }}
+                className={`group flex cursor-default items-center gap-1 truncate pr-1 text-left text-sm ${
+                  isSelected ? "bg-selected text-text" : "text-text hover:bg-hover"
+                } ${isRecentlyChanged ? "tree-row-glow" : ""}`}
               >
-                {display.message}
+                {row.isDir ? (
+                  <span
+                    className={`inline-block w-3 shrink-0 text-text-muted transition-transform ${
+                      isExpanded ? "rotate-90" : ""
+                    }`}
+                  >
+                    ▸
+                  </span>
+                ) : (
+                  <span className="inline-block w-3 shrink-0" />
+                )}
+                <span
+                  className={`min-w-0 flex-1 truncate ${isLoading ? "opacity-50" : ""} ${
+                    row.ignored ? "italic text-text-muted" : ""
+                  }`}
+                  title={row.ignored ? `${row.path} — ignored by git` : undefined}
+                >
+                  {row.name}
+                </span>
+                {row.agentContext && (
+                  <span
+                    className="shrink-0 text-xs text-accent"
+                    title="Agent context file — always shown"
+                    aria-label="Agent context file"
+                  >
+                    ◆
+                  </span>
+                )}
+                {isLoading && <span className="shrink-0 text-xs text-text-muted">…</span>}
+                {!isLoading && badge && statusKind && (
+                  <span className={`shrink-0 font-mono text-xs ${BADGE_CLASS[statusKind]}`}>
+                    {badge}
+                  </span>
+                )}
+                <PinButton path={row.path} pinned={isPinned} />
               </div>
             );
-          }
-
-          const row = display.row;
-          const isExpanded = row.isDir && expanded.has(row.path);
-          const isLoading = row.isDir && loading.has(row.path);
-          const isSelected = selected === row.path;
-          const isRecentlyChanged = row.path in recentlyChanged;
-          const statusKind = statusByPath[row.path];
-          const badge = gitBadgeFor(row.path, statusByPath);
-
-          return (
-            <button
-              key={row.path}
-              type="button"
-              tabIndex={-1}
-              onClick={() => {
-                select(row.path, row.isDir);
-                if (row.isDir) toggle(row.path);
-              }}
-              title={row.path}
-              style={{ ...commonStyle, paddingLeft: row.depth * 14 + 8 }}
-              className={`flex items-center gap-1 truncate pr-2 text-left text-sm ${
-                isSelected ? "bg-selected text-text" : "text-text hover:bg-hover"
-              } ${isRecentlyChanged ? "tree-row-glow" : ""}`}
-            >
-              {row.isDir ? (
-                <span
-                  className={`inline-block w-3 shrink-0 text-text-muted transition-transform ${
-                    isExpanded ? "rotate-90" : ""
-                  }`}
-                >
-                  ▸
-                </span>
-              ) : (
-                <span className="inline-block w-3 shrink-0" />
-              )}
-              <span
-                className={`min-w-0 flex-1 truncate ${isLoading ? "opacity-50" : ""} ${
-                  row.ignored ? "italic text-text-muted" : ""
-                }`}
-                title={row.ignored ? `${row.path} — ignored by git` : undefined}
-              >
-                {row.name}
-              </span>
-              {isLoading && <span className="shrink-0 text-xs text-text-muted">…</span>}
-              {!isLoading && badge && statusKind && (
-                <span className={`shrink-0 font-mono text-xs ${BADGE_CLASS[statusKind]}`}>
-                  {badge}
-                </span>
-              )}
-            </button>
-          );
-        })}
+          })}
+        </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * The pin toggle on a tree row. It has to live here rather than in the preview
+ * pane: the motivating case is pinning a *directory*, and only the tree
+ * renders those.
+ */
+function PinButton({ path, pinned }: { path: string; pinned: boolean }) {
+  const togglePin = useSettingsStore((s) => s.togglePin);
+
+  return (
+    <button
+      type="button"
+      tabIndex={-1}
+      onClick={(event) => {
+        // The row underneath would otherwise select and expand.
+        event.stopPropagation();
+        void togglePin(path);
+      }}
+      title={pinned ? `Unpin ${path}` : `Pin ${path} — keeps it visible and at the top`}
+      aria-label={pinned ? `Unpin ${path}` : `Pin ${path}`}
+      aria-pressed={pinned}
+      className={`shrink-0 px-1 text-xs hover:text-accent ${
+        pinned
+          ? "text-accent"
+          : "text-text-muted opacity-0 group-hover:opacity-100 focus:opacity-100"
+      }`}
+    >
+      {pinned ? PIN_ON : PIN_OFF}
+    </button>
+  );
+}
+
+/**
+ * The pinned paths, above the tree rather than scrolling with it — they are
+ * the things you want one click away regardless of where the tree is.
+ */
+function PinnedGroup() {
+  const pins = useSettingsStore((s) => s.pins);
+  const togglePin = useSettingsStore((s) => s.togglePin);
+  const selected = useTreeStore((s) => s.selected);
+
+  if (pins.length === 0) return null;
+
+  const open = (entry: PinnedEntry) => {
+    if (!entry.exists) return;
+    // Expanding the ancestors is what makes a pinned directory usable: the
+    // group is a shortcut into the tree, not a second tree.
+    void useTreeStore.getState().revealPath(entry.path, entry.isDir);
+  };
+
+  return (
+    <div className="max-h-40 shrink-0 overflow-y-auto border-b border-border pb-1">
+      <h2 className="px-2 pb-0.5 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-text-muted">
+        Pinned
+      </h2>
+      <ul>
+        {pins.map((entry) => (
+          <li key={entry.path}>
+            <div
+              className={`flex items-center gap-1 pl-2 pr-1 text-sm ${
+                selected === entry.path ? "bg-selected" : "hover:bg-hover"
+              }`}
+              style={{ height: ROW_HEIGHT }}
+            >
+              <button
+                type="button"
+                onClick={() => open(entry)}
+                disabled={!entry.exists}
+                title={entry.exists ? entry.path : `${entry.path} — no longer exists`}
+                className={`min-w-0 flex-1 truncate text-left ${
+                  entry.exists ? "text-text" : "text-text-muted line-through"
+                }`}
+              >
+                {entry.name}
+                <span className="ml-1.5 truncate text-xs text-text-muted">{entry.path}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => void togglePin(entry.path)}
+                title={`Unpin ${entry.path}`}
+                aria-label={`Unpin ${entry.path}`}
+                className="shrink-0 px-1 text-xs text-accent hover:text-text"
+              >
+                {PIN_ON}
+              </button>
+            </div>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

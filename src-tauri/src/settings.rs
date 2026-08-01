@@ -1,8 +1,12 @@
-//! Per-workspace settings, persisted in the shared store.
+//! Settings, persisted in the shared store, in two scopes.
 //!
-//! Today that's just extra ignore globs. They're gitignore syntax, compiled
-//! into the same kind of matcher `.gitignore` produces, so the tree, the file
-//! index, and the watcher can all apply them the same way.
+//! *Per workspace* (keyed by root): extra ignore globs and pinned paths. The
+//! globs are gitignore syntax, compiled into the same kind of matcher
+//! `.gitignore` produces, so the tree, the file index, and the watcher can all
+//! apply them the same way.
+//!
+//! *Per app*: settings that describe how you work rather than what one repo
+//! contains. Both scopes live in the same store file under separate keys.
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -13,18 +17,24 @@ use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
 
 use crate::paths::normalize_absolute;
-use crate::protocol::WorkspaceSettings;
+use crate::protocol::{AppSettings, WorkspaceSettings};
+use crate::visibility::Visibility;
 
 const SETTINGS_STORE_FILE: &str = "settings.json";
 /// Object keyed by normalized workspace root, so settings follow the
 /// workspace rather than the app.
 const WORKSPACE_SETTINGS_KEY: &str = "workspaceSettings";
+/// The app-level scope — one object, not keyed by anything.
+const APP_SETTINGS_KEY: &str = "appSettings";
 
-/// Tauri-managed state holding the open workspace's settings and the matcher
-/// compiled from them. Kept in memory because `list_dir` consults it on every
-/// call and re-reading the store each time would be silly.
+/// Tauri-managed state holding the settings in effect and the matcher compiled
+/// from them. Kept in memory because `list_dir` consults it on every call and
+/// re-reading the store each time would be silly.
 #[derive(Default)]
-pub struct SettingsState(pub Mutex<Active>);
+pub struct SettingsState {
+    pub workspace: Mutex<Active>,
+    pub app: Mutex<AppSettings>,
+}
 
 /// The current settings alongside their compiled matcher.
 pub struct Active {
@@ -65,6 +75,50 @@ pub fn is_extra_ignored(matcher: &Gitignore, relative: &str, is_dir: bool) -> bo
     matcher
         .matched_path_or_any_parents(relative, is_dir)
         .is_ignore()
+}
+
+/// Read the persisted app-level settings. Missing or unreadable means
+/// defaults, which for this scope is not "everything off".
+pub fn load_app(app: &AppHandle) -> AppSettings {
+    let Ok(store) = app.store(SETTINGS_STORE_FILE) else {
+        return AppSettings::default();
+    };
+    store
+        .get(APP_SETTINGS_KEY)
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default()
+}
+
+/// Persist the app-level settings and put them into effect.
+pub fn save_app(app: &AppHandle, state: &SettingsState, value: AppSettings) -> Result<(), String> {
+    let store = app
+        .store(SETTINGS_STORE_FILE)
+        .map_err(|e| format!("failed to open settings store: {e}"))?;
+    store.set(APP_SETTINGS_KEY, json!(value));
+    store
+        .save()
+        .map_err(|e| format!("failed to save settings store: {e}"))?;
+    set_app(state, value)
+}
+
+/// Replace the in-memory app-level settings without touching the store, for
+/// the startup load.
+pub fn set_app(state: &SettingsState, value: AppSettings) -> Result<(), String> {
+    let mut guard = state.app.lock().map_err(|_| "settings state poisoned")?;
+    *guard = value;
+    Ok(())
+}
+
+/// The app-level settings currently in effect.
+pub fn current_app(state: &SettingsState) -> Result<AppSettings, String> {
+    let guard = state.app.lock().map_err(|_| "settings state poisoned")?;
+    Ok(guard.clone())
+}
+
+/// The visibility rules both scopes add up to — what the tree, the file index,
+/// and the watcher all filter through.
+pub fn current_visibility(state: &SettingsState) -> Result<Visibility, String> {
+    Ok(Visibility::new(&current(state)?, &current_app(state)?))
 }
 
 /// Read the persisted settings for `root`.
@@ -108,21 +162,31 @@ pub fn activate(
     settings: WorkspaceSettings,
 ) -> Result<(), String> {
     let matcher = build_matcher(root, &settings);
-    let mut guard = state.0.lock().map_err(|_| "settings state poisoned")?;
+    let mut guard = state
+        .workspace
+        .lock()
+        .map_err(|_| "settings state poisoned")?;
     *guard = Active { settings, matcher };
     Ok(())
 }
 
-/// Reset to defaults (workspace closed).
+/// Reset to defaults (workspace closed). App-level settings are deliberately
+/// left alone — they outlive the workspace.
 pub fn deactivate(state: &SettingsState) -> Result<(), String> {
-    let mut guard = state.0.lock().map_err(|_| "settings state poisoned")?;
+    let mut guard = state
+        .workspace
+        .lock()
+        .map_err(|_| "settings state poisoned")?;
     *guard = Active::default();
     Ok(())
 }
 
 /// The settings currently in effect.
 pub fn current(state: &SettingsState) -> Result<WorkspaceSettings, String> {
-    let guard = state.0.lock().map_err(|_| "settings state poisoned")?;
+    let guard = state
+        .workspace
+        .lock()
+        .map_err(|_| "settings state poisoned")?;
     Ok(guard.settings.clone())
 }
 
@@ -130,7 +194,7 @@ pub fn current(state: &SettingsState) -> Result<WorkspaceSettings, String> {
 /// it without keeping the lock (the watcher keeps one for its whole run).
 pub fn current_matcher(state: &SettingsState) -> Gitignore {
     state
-        .0
+        .workspace
         .lock()
         .map(|guard| guard.matcher.clone())
         .unwrap_or_else(|_| Gitignore::empty())

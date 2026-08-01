@@ -27,8 +27,9 @@ interface TreeStore {
   collapse: (path: string) => void;
   select: (path: string, isDir: boolean) => void;
   /** Expands every ancestor directory of `path` (loading as needed) and
-   * selects it — used by the activity feed's "reveal in tree" row click. */
-  revealPath: (path: string) => Promise<void>;
+   * selects it — used by the activity feed's "reveal in tree" row click and
+   * by the Pinned group. A directory target is expanded as well. */
+  revealPath: (path: string, isDir?: boolean) => Promise<void>;
   /** Re-fetches every directory already loaded (used by the refresh button). */
   reloadLoaded: () => Promise<void>;
   /**
@@ -101,9 +102,11 @@ export const useTreeStore = create<TreeStore>((set, get) => ({
 
   select: (path, isDir) => set({ selected: path, selectedIsDir: isDir }),
 
-  revealPath: async (path) => {
+  revealPath: async (path, isDir = false) => {
+    // Every segment named here gets expanded, so a file's own name comes off
+    // the end while a directory's stays on — revealing a directory opens it.
     const segments = path.split("/");
-    segments.pop(); // drop the file/dir name itself, keep only ancestors
+    if (!isDir) segments.pop();
     let ancestor = "";
     for (const segment of segments) {
       ancestor = ancestor ? `${ancestor}/${segment}` : segment;
@@ -114,7 +117,7 @@ export const useTreeStore = create<TreeStore>((set, get) => ({
         await get().loadDir(ancestor);
       }
     }
-    set({ selected: path, selectedIsDir: false });
+    set({ selected: path, selectedIsDir: isDir });
   },
 
   reloadLoaded: async () => {

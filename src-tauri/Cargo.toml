@@ -1,6 +1,6 @@
 [package]
 name = "agentlens"
-version = "0.0.5"
+version = "0.0.6"
 description = "Lightweight open-source observer for agentic coding"
 authors = ["Harrison Wallace"]
 license = "MIT"

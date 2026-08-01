@@ -1,9 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSettingsStore } from "../stores/settingsStore";
-import { useTreeStore } from "../stores/treeStore";
 
-/** Turn the textarea's free text into the glob list the backend stores. */
-function toGlobs(text: string): string[] {
+/** Turn a textarea's free text into the list the backend stores. */
+function toLines(text: string): string[] {
   return text
     .split("\n")
     .map((line) => line.trim())
@@ -13,72 +12,195 @@ function toGlobs(text: string): string[] {
 export default function SettingsPanel() {
   const open = useSettingsStore((s) => s.open);
   const settings = useSettingsStore((s) => s.settings);
+  const app = useSettingsStore((s) => s.app);
   const saving = useSettingsStore((s) => s.saving);
   const error = useSettingsStore((s) => s.error);
   const setOpen = useSettingsStore((s) => s.setOpen);
   const save = useSettingsStore((s) => s.save);
+  const setPinned = useSettingsStore((s) => s.setPinned);
+  const toggleShowIgnored = useSettingsStore((s) => s.toggleShowIgnored);
+  const toggleShowAgentContext = useSettingsStore((s) => s.toggleShowAgentContext);
 
-  const [text, setText] = useState("");
-
-  // Re-seed the textarea each time the panel opens so an abandoned edit
-  // doesn't reappear later as if it had been saved.
+  // Esc closes; there is nothing to lose by closing, since every control here
+  // has already applied.
   useEffect(() => {
-    if (open) setText(settings.extraIgnores.join("\n"));
-  }, [open, settings.extraIgnores]);
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open, setOpen]);
 
   if (!open) return null;
 
-  const apply = async () => {
-    const saved = await save(toGlobs(text));
-    if (!saved) return;
-    setOpen(false);
-    // The globs change what the tree may show, so everything loaded has to
-    // be re-read; the backend has already restarted the watcher.
-    await useTreeStore.getState().reloadLoaded();
-  };
-
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 pt-24"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 pt-20"
       onMouseDown={() => setOpen(false)}
     >
       <div
-        className="w-[32rem] max-w-[90vw] rounded border border-border bg-surface p-4 shadow-xl"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Settings"
+        className="max-h-[80vh] w-[34rem] max-w-[90vw] overflow-y-auto rounded border border-border bg-surface shadow-xl"
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <h2 className="text-sm font-semibold text-text">Workspace settings</h2>
-        <label className="mt-3 block text-xs text-text-muted" htmlFor="extra-ignores">
-          Extra ignore globs — gitignore syntax, one per line. Hidden from the tree, the file jump,
-          and the activity feed.
-        </label>
-        <textarea
-          id="extra-ignores"
-          value={text}
-          onChange={(event) => setText(event.target.value)}
-          rows={8}
-          spellCheck={false}
-          placeholder={"dist/\n*.log\ncoverage/"}
-          className="mt-2 w-full resize-y rounded border border-border bg-bg p-2 font-mono text-xs text-text outline-none placeholder:text-text-muted focus:border-glow"
-        />
-        {error && <p className="mt-2 text-xs text-danger">{error}</p>}
-        <div className="mt-3 flex justify-end gap-2">
+        <div className="flex items-center justify-between border-b border-border px-4 py-3">
+          <h2 className="text-sm font-semibold text-text">Settings</h2>
           <button
             type="button"
             onClick={() => setOpen(false)}
-            className="rounded px-3 py-1 text-xs text-text-muted hover:bg-hover hover:text-text"
+            aria-label="Close settings"
+            className="rounded px-2 text-sm text-text-muted hover:bg-hover hover:text-text"
           >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={() => void apply()}
-            disabled={saving}
-            className="rounded bg-selected px-3 py-1 text-xs text-text hover:bg-hover disabled:opacity-50"
-          >
-            {saving ? "Saving…" : "Save"}
+            ✕
           </button>
         </div>
+
+        {/* Sections name what a setting affects, not where it is stored — and
+            showing both at once is what teaches the scope model. */}
+        <Section title="This workspace">
+          <Toggle
+            label="Show git-ignored files"
+            description="Reveal everything .gitignore hides. The escape hatch, not the everyday setting."
+            checked={settings.showIgnored}
+            disabled={saving}
+            onChange={() => void toggleShowIgnored()}
+          />
+          <TextRows
+            id="pinned-paths"
+            label="Pinned paths"
+            description="Always visible and grouped at the top of the tree. Pin from a tree row; this is for bulk edits."
+            placeholder={"notes/\nTODO.md"}
+            value={settings.pinned}
+            onCommit={(lines) => void setPinned(lines)}
+          />
+          <TextRows
+            id="extra-ignores"
+            label="Extra ignore globs"
+            description="Gitignore syntax, one per line. Hidden from the tree, the file jump, and the activity feed."
+            placeholder={"dist/\n*.log\ncoverage/"}
+            value={settings.extraIgnores}
+            onCommit={(lines) => void save(lines)}
+          />
+        </Section>
+
+        <Section title="All workspaces">
+          <Toggle
+            label="Show agent context files"
+            description="Surface AGENTS.md, CLAUDE.md and friends even when git ignores them."
+            checked={app.showAgentContext}
+            disabled={saving}
+            onChange={() => void toggleShowAgentContext()}
+          />
+        </Section>
+
+        {error && (
+          <p className="border-t border-border px-4 py-2 text-xs text-danger" role="alert">
+            {error}
+          </p>
+        )}
       </div>
+    </div>
+  );
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="border-b border-border px-4 py-3 last:border-b-0">
+      <h3 className="pb-2 text-[10px] font-semibold uppercase tracking-wide text-text-muted">
+        {title}
+      </h3>
+      <div className="flex flex-col gap-3">{children}</div>
+    </section>
+  );
+}
+
+/** Label, one-line description, control right-aligned. Applies immediately. */
+function Toggle({
+  label,
+  description,
+  checked,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  description: string;
+  checked: boolean;
+  disabled: boolean;
+  onChange: () => void;
+}) {
+  return (
+    <label className="flex cursor-pointer items-start gap-3">
+      <span className="min-w-0 flex-1">
+        <span className="block text-xs font-medium text-text">{label}</span>
+        <span className="block text-xs text-text-muted">{description}</span>
+      </span>
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        onChange={onChange}
+        className="mt-0.5 h-4 w-4 shrink-0 accent-accent"
+      />
+    </label>
+  );
+}
+
+/**
+ * A one-per-line list. Text fields apply on blur rather than instantly: a
+ * half-typed glob would otherwise take effect on every keystroke.
+ */
+function TextRows({
+  id,
+  label,
+  description,
+  placeholder,
+  value,
+  onCommit,
+}: {
+  id: string;
+  label: string;
+  description: string;
+  placeholder: string;
+  value: string[];
+  onCommit: (lines: string[]) => void;
+}) {
+  // Keyed on the joined text, not the array: the backend hands back a fresh
+  // array on every save, so an identity dep would re-sync after writes that
+  // never touched this field.
+  const stored = value.join("\n");
+  const ref = useRef<HTMLTextAreaElement>(null);
+  const [text, setText] = useState(stored);
+
+  // Follow the stored value when it changes underneath — a pin toggled from a
+  // tree row, or a fresh workspace — but never mid-edit: the field commits
+  // itself on blur, and overwriting it here would discard live keystrokes.
+  useEffect(() => {
+    if (ref.current !== document.activeElement) setText(stored);
+  }, [stored]);
+
+  return (
+    <div>
+      <label className="block text-xs font-medium text-text" htmlFor={id}>
+        {label}
+      </label>
+      <p className="text-xs text-text-muted">{description}</p>
+      <textarea
+        id={id}
+        ref={ref}
+        value={text}
+        onChange={(event) => setText(event.target.value)}
+        onBlur={() => {
+          const lines = toLines(text);
+          if (lines.join("\n") !== stored) onCommit(lines);
+        }}
+        rows={4}
+        spellCheck={false}
+        placeholder={placeholder}
+        className="mt-1.5 w-full resize-y rounded border border-border bg-bg p-2 font-mono text-xs text-text outline-none placeholder:text-text-muted focus:border-glow"
+      />
     </div>
   );
 }

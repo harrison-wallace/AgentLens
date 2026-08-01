@@ -3,12 +3,12 @@ import { countsFor, flattenTree, gitBadgeFor, parentDirsOf } from "./treeRows";
 import type { DirEntryNode, GitFileStatus, GitStatusKind } from "./protocol";
 
 function entry(name: string, path: string, isDir: boolean): DirEntryNode {
-  return { name, path, isDir, ignored: false };
+  return { name, path, isDir, ignored: false, agentContext: false };
 }
 
 /** Expected tree row; `ignored` is false unless a case says otherwise. */
 function row(name: string, path: string, isDir: boolean, depth: number, ignored = false) {
-  return { name, path, isDir, depth, ignored };
+  return { name, path, isDir, depth, ignored, agentContext: false };
 }
 
 describe("flattenTree", () => {

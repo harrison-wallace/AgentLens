@@ -1,8 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AppInfo,
+  AppSettings,
   DirEntryNode,
   GitStatusSnapshot,
+  PinnedEntry,
   PreviewPayload,
   SessionDiff,
   WatcherStatus,
@@ -71,4 +73,18 @@ export function workspaceSettings(): Promise<WorkspaceSettings> {
 
 export function setWorkspaceSettings(value: WorkspaceSettings): Promise<WorkspaceSettings> {
   return invoke<WorkspaceSettings>("set_workspace_settings", { value });
+}
+
+/** App-level settings; unlike the workspace ones, no workspace need be open. */
+export function appSettings(): Promise<AppSettings> {
+  return invoke<AppSettings>("app_settings");
+}
+
+export function setAppSettings(value: AppSettings): Promise<AppSettings> {
+  return invoke<AppSettings>("set_app_settings", { value });
+}
+
+/** The pinned paths resolved against the disk, for the tree's Pinned group. */
+export function pinnedEntries(): Promise<PinnedEntry[]> {
+  return invoke<PinnedEntry[]>("pinned_entries");
 }

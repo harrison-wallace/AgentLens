@@ -35,13 +35,14 @@ use notify_debouncer_full::{
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::gitstatus;
-use crate::paths::to_workspace_relative;
+use crate::paths::{resolve_in_workspace, to_workspace_relative};
 use crate::protocol::{
     FsEvent, FsEventKind, WatcherState, WatcherStatus, EVENT_FS_CHANGES, EVENT_GIT_STATUS,
     EVENT_WATCHER_STATUS,
 };
 use crate::settings::is_extra_ignored;
 use crate::tree::BUILTIN_IGNORED_DIRS;
+use crate::visibility::Visibility;
 
 /// Maximum number of distinct paths emitted per batch; excess is dropped
 /// (by first-seen order) rather than flooding the UI.
@@ -54,18 +55,19 @@ pub struct Filters {
     gitignore: Gitignore,
     /// The workspace's own extra globs.
     extra: Gitignore,
-    /// When set, git-ignored paths are watched and surfaced. The built-in
-    /// list still applies, which is what keeps `node_modules` churn out of
-    /// the feed regardless of this flag.
-    show_ignored: bool,
+    /// What is watched and surfaced despite `.gitignore` — the same rules the
+    /// tree renders, so a file the tree shows also glows when it changes. The
+    /// built-in list still applies on top, which is what keeps `node_modules`
+    /// churn out of the feed regardless.
+    visibility: Visibility,
 }
 
 impl Filters {
-    pub fn new(root: &Path, extra: Gitignore, show_ignored: bool) -> Self {
+    pub fn new(root: &Path, extra: Gitignore, visibility: Visibility) -> Self {
         Filters {
             gitignore: build_gitignore(root),
             extra,
-            show_ignored,
+            visibility,
         }
     }
 
@@ -86,7 +88,7 @@ impl Filters {
         if is_extra_ignored(&self.extra, relative, is_dir) {
             return true;
         }
-        if self.show_ignored {
+        if self.visibility.show_ignored || self.visibility.forced(relative) {
             return false;
         }
         self.gitignore
@@ -184,13 +186,12 @@ pub fn start(app: &AppHandle, manager: &WatcherManager, root: &Path, filters: Fi
     let app_for_thread = app.clone();
     let root_for_thread = root.to_path_buf();
     let generation_handle = Arc::clone(&manager.generation);
-    let show_ignored = filters.show_ignored;
     std::thread::spawn(move || {
         // Everything below the root gets its watch here rather than on the
         // command thread. Until this returns only the root is covered, so a
         // write deep in the tree during the first moments of a session can be
         // missed; root events are not lost, they queue in `rx`.
-        register_descendant_watches(&app_for_thread, &root_for_thread, generation, show_ignored);
+        register_descendant_watches(&app_for_thread, &root_for_thread, generation, &filters);
 
         while let Ok(result) = rx.recv() {
             if generation_handle.load(Ordering::SeqCst) != generation {
@@ -322,8 +323,26 @@ fn watchable_dirs(from: &Path, show_ignored: bool) -> Vec<PathBuf> {
 
 /// Give every non-ignored descendant directory its own watch. Runs once per
 /// session on the watcher thread.
-fn register_descendant_watches(app: &AppHandle, root: &Path, generation: u64, show_ignored: bool) {
-    let dirs = watchable_dirs_parallel(root, show_ignored);
+///
+/// The main walk prunes ignored subtrees, so a pinned directory inside one
+/// would never get a watch and its changes would never glow in the tree that
+/// is showing it. Each pinned directory therefore gets its own walk, which
+/// costs nothing when nothing is pinned.
+fn register_descendant_watches(app: &AppHandle, root: &Path, generation: u64, filters: &Filters) {
+    let mut dirs = watchable_dirs_parallel(root, filters.visibility.show_ignored);
+    if !filters.visibility.show_ignored {
+        for pin in &filters.visibility.pinned {
+            if let Ok(target) = resolve_in_workspace(root, pin) {
+                if target.is_dir() {
+                    dirs.extend(watchable_dirs(&target, true));
+                }
+            }
+        }
+        // A pin inside a visible subtree overlaps the main walk, and watching
+        // the same directory twice would double every event from it.
+        dirs.sort();
+        dirs.dedup();
+    }
 
     let manager = app.state::<WatcherManager>();
     // The workspace can be closed or swapped while the walk is in flight.
@@ -401,11 +420,11 @@ fn adopt_new_dirs(
 
     let mut adopted = Vec::new();
     for dir in appeared {
-        for nested in watchable_dirs(&dir, filters.show_ignored) {
+        for nested in watchable_dirs(&dir, filters.visibility.show_ignored) {
             let _ = debouncer.watch(&nested, RecursiveMode::NonRecursive);
         }
         adopted.extend(
-            existing_entries_under(&dir, filters.show_ignored)
+            existing_entries_under(&dir, filters.visibility.show_ignored)
                 .iter()
                 .filter_map(|path| to_fs_event(root, path, FsEventKind::Created, path.is_dir(), at))
                 .filter(|event| !filters.is_ignored(&event.path, event.is_dir)),
@@ -674,9 +693,17 @@ mod tests {
 
     // -- Filters::is_ignored ------------------------------------------------
 
-    /// Filters for `root` with no extra globs.
+    /// Filters for `root` with no extra globs and nothing forced visible.
     fn filters_for(root: &Path, show_ignored: bool) -> Filters {
-        Filters::new(root, Gitignore::empty(), show_ignored)
+        Filters::new(
+            root,
+            Gitignore::empty(),
+            Visibility {
+                show_ignored,
+                show_agent_context: false,
+                pinned: Vec::new(),
+            },
+        )
     }
 
     #[test]
@@ -765,11 +792,43 @@ mod tests {
             },
         );
         for show_ignored in [false, true] {
-            let f = Filters::new(dir.path(), extra.clone(), show_ignored);
+            let f = Filters::new(
+                dir.path(),
+                extra.clone(),
+                Visibility {
+                    show_ignored,
+                    show_agent_context: false,
+                    pinned: Vec::new(),
+                },
+            );
             assert!(f.is_ignored("scratch.tmp", false));
             assert!(f.is_ignored("vendor/lib/x.rs", false));
             assert!(!f.is_ignored("src/main.rs", false));
         }
+    }
+
+    #[test]
+    fn forced_paths_reach_the_feed_despite_gitignore() {
+        // A tree that shows the file has to glow when it changes, so the
+        // watcher applies the same visibility rules the listing does.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        stdfs::write(root.join(".gitignore"), "AGENTS.md\nnotes/\n").unwrap();
+
+        let f = Filters::new(
+            root,
+            Gitignore::empty(),
+            Visibility {
+                show_ignored: false,
+                show_agent_context: true,
+                pinned: vec!["notes/drafts".to_string()],
+            },
+        );
+
+        assert!(!f.is_ignored("AGENTS.md", false));
+        assert!(!f.is_ignored("notes/drafts/spec.md", false));
+        // Everything else under `notes/` stays out of the feed.
+        assert!(f.is_ignored("notes/loose-end.md", false));
     }
 
     // -- touches_git_dir --------------------------------------------------

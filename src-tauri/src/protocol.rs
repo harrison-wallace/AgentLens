@@ -39,9 +39,28 @@ pub struct DirEntryNode {
     /// Workspace-relative, forward slashes.
     pub path: String,
     pub is_dir: bool,
-    /// True when git ignores this entry. Always false unless the workspace
-    /// has `show_ignored` on, since ignored entries are otherwise absent.
+    /// True when git ignores this entry. An ignored entry only appears at all
+    /// when `show_ignored` is on or something forces it visible (a pin, or an
+    /// agent context file).
     pub ignored: bool,
+    /// This is a file that instructs a coding agent, and the app is surfacing
+    /// it as one. False when the app-level setting is off.
+    pub agent_context: bool,
+}
+
+/// One entry of the workspace's pinned list, resolved against the disk.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PinnedEntry {
+    /// Workspace-relative, forward slashes — exactly as stored in settings.
+    pub path: String,
+    /// Final path component, for display.
+    pub name: String,
+    pub is_dir: bool,
+    /// False for a pin whose target has been renamed or deleted. Dead pins are
+    /// shown rather than dropped: a pin vanishing on its own is worse than a
+    /// visible stale one.
+    pub exists: bool,
 }
 
 /// How git sees one file.
@@ -182,6 +201,29 @@ pub struct WorkspaceSettings {
     /// not affect the activity feed: hiding ignored churn there is what keeps
     /// an `npm install` from flooding it.
     pub show_ignored: bool,
+    /// Workspace-relative paths (files and directories) kept visible whatever
+    /// `.gitignore` says, and grouped at the top of the tree.
+    pub pinned: Vec<String>,
+}
+
+/// Settings that apply to every workspace, persisted once for the app.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+// `default` for the same forward-compatibility reason as `WorkspaceSettings`,
+// and because the defaults here are not all `false`.
+#[serde(rename_all = "camelCase", default)]
+pub struct AppSettings {
+    /// Surface the files that instruct a coding agent (`AGENTS.md` and
+    /// friends) whatever `.gitignore` says. App-level because "always show me
+    /// `AGENTS.md`" is how you work, not a property of one repo.
+    pub show_agent_context: bool,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        AppSettings {
+            show_agent_context: true,
+        }
+    }
 }
 
 /// Event names emitted by the backend. Rust `emit` calls and TS `listen`

@@ -5,12 +5,13 @@ mod protocol;
 mod settings;
 mod snapshots;
 mod tree;
+mod visibility;
 mod watcher;
 mod workspace;
 
 use protocol::{
-    CommandResult, DirEntryNode, GitStatusSnapshot, PreviewPayload, SessionDiff, WatcherStatus,
-    WorkspaceInfo, WorkspaceSettings,
+    AppSettings, CommandResult, DirEntryNode, GitStatusSnapshot, PinnedEntry, PreviewPayload,
+    SessionDiff, WatcherStatus, WorkspaceInfo, WorkspaceSettings,
 };
 use settings::SettingsState;
 use snapshots::SessionState;
@@ -26,6 +27,28 @@ fn to_workspace_info(w: &workspace::Workspace) -> WorkspaceInfo {
         name: w.name.clone(),
         watching_since: w.watching_since,
     }
+}
+
+/// (Re)start the watcher against the visibility rules currently in effect.
+/// The watcher holds its filters for the life of the watch, so any settings
+/// change that alters what is visible has to go through here.
+fn restart_watcher(
+    app: &AppHandle,
+    watcher_state: &WatcherManager,
+    settings_state: &SettingsState,
+    root: &std::path::Path,
+) -> CommandResult<()> {
+    watcher::start(
+        app,
+        watcher_state,
+        root,
+        watcher::Filters::new(
+            root,
+            settings::current_matcher(settings_state),
+            settings::current_visibility(settings_state)?,
+        ),
+    );
+    Ok(())
 }
 
 #[tauri::command]
@@ -57,16 +80,7 @@ fn open_workspace(
     let loaded = settings::load(&app, &opened.root);
     settings::activate(&settings_state, &opened.root, loaded)?;
     snapshots::restart(&session_state, &opened.root)?;
-    watcher::start(
-        &app,
-        &watcher_state,
-        &opened.root,
-        watcher::Filters::new(
-            &opened.root,
-            settings::current_matcher(&settings_state),
-            settings::current(&settings_state)?.show_ignored,
-        ),
-    );
+    restart_watcher(&app, &watcher_state, &settings_state, &opened.root)?;
     Ok(to_workspace_info(&opened))
 }
 
@@ -101,12 +115,11 @@ fn list_dir(
     settings_state: State<SettingsState>,
 ) -> CommandResult<Vec<DirEntryNode>> {
     let ws = workspace::current(&state)?;
-    let settings = settings::current(&settings_state)?;
     tree::list_dir(
         &ws.root,
         &path,
         &settings::current_matcher(&settings_state),
-        settings.show_ignored,
+        &settings::current_visibility(&settings_state)?,
     )
 }
 
@@ -116,11 +129,10 @@ fn list_files(
     settings_state: State<SettingsState>,
 ) -> CommandResult<Vec<String>> {
     let ws = workspace::current(&state)?;
-    let settings = settings::current(&settings_state)?;
     Ok(tree::list_files(
         &ws.root,
         &settings::current_matcher(&settings_state),
-        settings.show_ignored,
+        &settings::current_visibility(&settings_state)?,
     ))
 }
 
@@ -185,19 +197,43 @@ fn set_workspace_settings(
     let ws = workspace::current(&state)?;
     settings::save(&app, &ws.root, &value)?;
     settings::activate(&settings_state, &ws.root, value)?;
-    // The watcher holds its matcher for the life of the watch, so new globs
-    // only take effect once it's restarted.
-    watcher::start(
-        &app,
-        &watcher_state,
-        &ws.root,
-        watcher::Filters::new(
-            &ws.root,
-            settings::current_matcher(&settings_state),
-            settings::current(&settings_state)?.show_ignored,
-        ),
-    );
+    restart_watcher(&app, &watcher_state, &settings_state, &ws.root)?;
     settings::current(&settings_state)
+}
+
+#[tauri::command]
+fn app_settings(settings_state: State<SettingsState>) -> CommandResult<AppSettings> {
+    settings::current_app(&settings_state)
+}
+
+/// App-level settings outlive the workspace, so unlike `set_workspace_settings`
+/// this doesn't need one open — but when there is one, the watcher has to pick
+/// up the new visibility rules the same way.
+#[tauri::command]
+fn set_app_settings(
+    value: AppSettings,
+    state: State<WorkspaceState>,
+    settings_state: State<SettingsState>,
+    watcher_state: State<WatcherManager>,
+    app: AppHandle,
+) -> CommandResult<AppSettings> {
+    settings::save_app(&app, &settings_state, value)?;
+    if let Some(ws) = workspace::current_opt(&state)? {
+        restart_watcher(&app, &watcher_state, &settings_state, &ws.root)?;
+    }
+    settings::current_app(&settings_state)
+}
+
+#[tauri::command]
+fn pinned_entries(
+    state: State<WorkspaceState>,
+    settings_state: State<SettingsState>,
+) -> CommandResult<Vec<PinnedEntry>> {
+    let ws = workspace::current(&state)?;
+    Ok(tree::pinned_entries(
+        &ws.root,
+        &settings::current_visibility(&settings_state)?,
+    ))
 }
 
 #[tauri::command]
@@ -229,6 +265,9 @@ pub fn run() {
             restart_session,
             workspace_settings,
             set_workspace_settings,
+            app_settings,
+            set_app_settings,
+            pinned_entries,
             recent_workspaces,
             watcher_status,
         ])
@@ -239,6 +278,12 @@ pub fn run() {
             window
                 .set_title(&format!("AgentLens v{}", env!("CARGO_PKG_VERSION")))
                 .expect("failed to set window title");
+            // App-level settings outlive any workspace, so they load once here
+            // rather than on open. An unreadable store means defaults, not a
+            // refusal to start.
+            let loaded = settings::load_app(app.handle());
+            settings::set_app(&app.state::<SettingsState>(), loaded)
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
             Ok(())
         })
         .run(tauri::generate_context!())

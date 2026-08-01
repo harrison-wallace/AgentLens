@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.6] - 2026-08-01
+
+### Added
+
+- Agent context files — `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.cursorrules`,
+  `.clinerules`, `.github/copilot-instructions.md` — are now surfaced and
+  marked in the tree even when `.gitignore` hides them, with no configuration.
+  These files are the agent's instructions, so an observer that hides them by
+  default has the inversion backwards. On by default, and app-level rather
+  than per-workspace, since "always show me `AGENTS.md`" describes how you
+  work rather than one repo.
+- Pinned paths: pin any file or directory from its tree row (hover icon, or
+  `p` on the focused row) to keep it visible whatever `.gitignore` says. A
+  pinned directory brings its contents and its ancestors with it, so a pin
+  buried inside an ignored subtree is still reachable. Pins appear in a group
+  above the tree, are listed in settings for bulk editing, and survive
+  reopening the workspace. Pins whose target has been renamed or deleted are
+  shown struck through rather than silently dropped.
+- An app-level settings scope, persisted alongside the per-workspace one, for
+  settings that outlive any single workspace.
+
+### Changed
+
+- Settings is now one modal with two labelled sections — _This workspace_ and
+  _All workspaces_ — so the scope of each setting is visible rather than
+  implied. Toggles apply immediately and text fields on blur; the Save and
+  Cancel buttons are gone, and Esc or the close button dismisses.
+- The activity feed and the tree glow now follow the same visibility rules as
+  the listing, so editing a gitignored `AGENTS.md` or a pinned file registers
+  as a change instead of passing silently. Pinned directories inside ignored
+  subtrees get their own watch registration.
+- Tree rows are now `role="treeitem"` inside a `role="tree"` container, with
+  `aria-level`, `aria-expanded` and `aria-selected`. Rows were `<button>`
+  elements, which cannot legally contain the pin button.
+
+### Fixed
+
+- Contents of a git-ignored directory were reported as tracked. A walk started
+  inside an ignored directory never evaluates that directory's own rule, so
+  expanding one with show-ignored on rendered every file as if git were
+  tracking it. The ignore state of the ancestor chain is now resolved the way
+  git resolves it.
+- Two settings saved at once could overwrite each other. Committing a text
+  field on blur and clicking a toggle in the same gesture fired two writes,
+  the second built from state the first had not yet updated, silently
+  discarding the typed value. Writes are now serialized and each builds on
+  what the previous one stored.
+- A text field in settings could be cleared mid-edit by an unrelated save
+  landing, discarding keystrokes.
+
 ## [0.0.5] - 2026-08-01
 
 ### Added

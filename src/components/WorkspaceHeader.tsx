@@ -41,14 +41,6 @@ export default function WorkspaceHeader() {
     await usePreviewStore.getState().refresh();
   };
 
-  // Git-ignored entries change what the tree may list, so everything already
-  // loaded has to be re-read. The feed is deliberately untouched.
-  const handleToggleIgnored = async () => {
-    if (await toggleShowIgnored()) {
-      await useTreeStore.getState().reloadLoaded();
-    }
-  };
-
   return (
     <header className="flex h-10 shrink-0 items-center gap-3 border-b border-border bg-surface-raised px-3">
       <span className="shrink-0 truncate text-sm font-semibold text-text">{workspace.name}</span>
@@ -96,13 +88,13 @@ export default function WorkspaceHeader() {
           Refresh
         </button>
         <IconButton
-          onClick={() => void handleToggleIgnored()}
+          onClick={() => void toggleShowIgnored()}
           label={showIgnored ? "Hide git-ignored files" : "Show git-ignored files"}
           active={showIgnored}
         >
           ◌
         </IconButton>
-        <IconButton onClick={() => openSettings(true)} label="Workspace settings">
+        <IconButton onClick={() => openSettings(true)} label="Settings">
           ⚙
         </IconButton>
         <button

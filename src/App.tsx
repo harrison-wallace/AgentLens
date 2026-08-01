@@ -36,6 +36,9 @@ export default function App() {
   useEffect(() => {
     void restore();
     void loadRecent();
+    // App-level settings outlive the workspace, so they load once here rather
+    // than in the per-workspace effect below.
+    void useSettingsStore.getState().refreshApp();
   }, [restore, loadRecent]);
 
   // Subscribed once for the app's lifetime (not per-workspace) so a

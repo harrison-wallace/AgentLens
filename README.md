@@ -5,7 +5,7 @@ read-only window into what your terminal coding agent (Claude Code, opencode,
 …) is doing to a directory: live file tree, change feed, git status,
 read-only previews. Runs on Windows and Ubuntu.
 
-**Status:** v0.0.5 — pre-alpha, with the local-observer feature set now in
+**Status:** v0.0.6 — pre-alpha, with the local-observer feature set now in
 place and awaiting acceptance testing on both platforms.
 
 What works today:
@@ -19,6 +19,11 @@ What works today:
   with a size guard and an "open externally" escape hatch.
 - **Diff since session** — what changed in a file since you started watching,
   not merely since the last commit.
+- **Agent context files always visible** — `AGENTS.md`, `CLAUDE.md` and
+  friends are surfaced and marked even when `.gitignore` hides them, because
+  they are what the agent is being told to do.
+- **Pinned paths** — pin any file or directory from its tree row to keep it
+  visible regardless of `.gitignore` and grouped at the top of the tree.
 - **`Ctrl+P` file jump**, arrow-key tree navigation, resizable and
   collapsible panels, and per-workspace extra ignore globs.
 

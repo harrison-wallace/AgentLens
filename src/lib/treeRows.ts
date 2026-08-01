@@ -12,6 +12,8 @@ export interface TreeRow {
   depth: number;
   /** Git ignores this entry; the tree dims it. */
   ignored: boolean;
+  /** A file that instructs a coding agent; the tree marks it. */
+  agentContext: boolean;
 }
 
 /**
@@ -36,6 +38,7 @@ export function flattenTree(
         isDir: child.isDir,
         depth,
         ignored: child.ignored,
+        agentContext: child.agentContext,
       });
       if (child.isDir && expanded.has(child.path)) {
         walk(child.path, depth + 1);

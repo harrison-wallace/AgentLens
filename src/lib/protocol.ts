@@ -20,8 +20,24 @@ export interface DirEntryNode {
   /** Workspace-relative, forward slashes. */
   path: string;
   isDir: boolean;
-  /** True when git ignores this entry; only ever set with `showIgnored` on. */
+  /**
+   * True when git ignores this entry. An ignored entry only appears at all
+   * with `showIgnored` on, or when a pin / agent context file forces it.
+   */
   ignored: boolean;
+  /** A file that instructs a coding agent, surfaced as one. */
+  agentContext: boolean;
+}
+
+/** One entry of the workspace's pinned list, resolved against the disk. */
+export interface PinnedEntry {
+  /** Workspace-relative, forward slashes — exactly as stored in settings. */
+  path: string;
+  /** Final path component, for display. */
+  name: string;
+  isDir: boolean;
+  /** False for a pin whose target has been renamed or deleted. */
+  exists: boolean;
 }
 
 /** How git sees one file. */
@@ -99,6 +115,14 @@ export interface WorkspaceSettings {
   extraIgnores: string[];
   /** Show git-ignored entries in the tree and file index — never the feed. */
   showIgnored: boolean;
+  /** Paths kept visible whatever `.gitignore` says, grouped at the tree top. */
+  pinned: string[];
+}
+
+/** Settings that apply to every workspace, persisted once for the app. */
+export interface AppSettings {
+  /** Surface `AGENTS.md` and friends whatever `.gitignore` says. */
+  showAgentContext: boolean;
 }
 
 /**
