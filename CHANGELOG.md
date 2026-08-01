@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.4] - 2026-08-01
+
+### Changed
+
+- Releases no longer include an `.rpm`. AgentLens targets Windows and Ubuntu,
+  so the RPM was an untested package for a platform the project doesn't
+  claim to support. Bundle targets are now stated explicitly (`deb`,
+  `appimage`, `nsis`, `msi`) instead of `"all"`.
+- CI builds with `--no-bundle`. It only needs to prove the app compiles and
+  links, and it discarded the installers it was producing — bundling them
+  cost roughly 15 minutes per run on Linux, where the RPM bundler gzips the
+  225 MB debug binary at about 250 KB/s. Installers still come from
+  `release.yml` on every tag.
+
 ## [0.0.3] - 2026-08-01
 
 Completes the local-observer feature set. Acceptance testing on Windows and

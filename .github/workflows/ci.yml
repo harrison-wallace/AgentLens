@@ -62,5 +62,9 @@ jobs:
         working-directory: src-tauri
         run: cargo test
 
-      - name: tauri build (debug)
-        run: npm run tauri build -- --debug
+      # CI only needs to prove the app compiles and links; the installers it
+      # would produce are discarded. Bundling them cost ~15 min on Linux,
+      # where the rpm bundler gzips the 225 MB debug binary at ~250 KB/s.
+      # release.yml is what actually builds artifacts.
+      - name: tauri build (debug, no bundle)
+        run: npm run tauri build -- --debug --no-bundle
