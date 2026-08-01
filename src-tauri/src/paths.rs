@@ -78,14 +78,18 @@ pub fn resolve_in_workspace(root: &Path, relative: &str) -> Result<PathBuf, Stri
 /// points at `/etc/shadow`. Resolving the real path and re-checking it
 /// against the root closes that, at the cost of requiring the file to exist.
 ///
-/// `root` must already be canonical — `workspace::open` guarantees it — or
-/// the prefix comparison is meaningless.
+/// Both sides are canonicalized before comparing. Canonicalizing only the
+/// target would make the check depend on the caller having handed us an
+/// already-canonical root: on Windows a short (`RUNNER~1`) or non-verbatim
+/// root never prefix-matches a `\\?\`-prefixed target, and every read would
+/// be rejected as an escape.
 pub fn resolve_existing_in_workspace(root: &Path, relative: &str) -> Result<PathBuf, String> {
     let joined = resolve_in_workspace(root, relative)?;
     let canonical = joined
         .canonicalize()
         .map_err(|e| format!("failed to resolve path: {e}"))?;
-    if !canonical.starts_with(root) {
+    let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    if !canonical.starts_with(&canonical_root) {
         return Err(format!("path escapes workspace: {relative}"));
     }
     Ok(canonical)
@@ -231,6 +235,33 @@ mod tests {
 
         let resolved = resolve_existing_in_workspace(&root, "src/main.rs").unwrap();
         assert!(resolved.starts_with(&root));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_existing_accepts_a_non_canonical_root() {
+        // Reaching the workspace through a symlinked path is the portable
+        // stand-in for Windows' short/verbatim path forms: the root the
+        // caller holds is not the one `canonicalize` returns, and the check
+        // must not read that as an escape.
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().canonicalize().unwrap();
+        std::fs::write(real.join("file.txt"), "hi").unwrap();
+
+        let link_root = dir
+            .path()
+            .parent()
+            .unwrap()
+            .join(format!("agentlens-link-{}", std::process::id()));
+        let _ = std::fs::remove_file(&link_root);
+        std::os::unix::fs::symlink(&real, &link_root).unwrap();
+
+        let resolved = resolve_existing_in_workspace(&link_root, "file.txt");
+        std::fs::remove_file(&link_root).unwrap();
+        assert!(
+            resolved.is_ok(),
+            "non-canonical root rejected: {resolved:?}"
+        );
     }
 
     #[test]
