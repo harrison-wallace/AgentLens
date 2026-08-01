@@ -20,6 +20,8 @@ export interface DirEntryNode {
   /** Workspace-relative, forward slashes. */
   path: string;
   isDir: boolean;
+  /** True when git ignores this entry; only ever set with `showIgnored` on. */
+  ignored: boolean;
 }
 
 /** How git sees one file. */
@@ -77,6 +79,9 @@ export type PreviewPayload =
   | { kind: "binary"; path: string; size: number }
   | { kind: "tooLarge"; path: string; size: number };
 
+/** Why a "diff since session" can't be produced. */
+export type DiffUnavailable = "notARepository" | "notTracked";
+
 /** The two sides of a "diff since session" comparison. */
 export interface SessionDiff {
   path: string;
@@ -84,14 +89,16 @@ export interface SessionDiff {
   baseline: string | null;
   /** Content now; `null` if the file has since been deleted. */
   current: string | null;
-  /** True when the workspace isn't a git repository. */
-  unavailable: boolean;
+  /** Set when no meaningful comparison exists; null means the diff is usable. */
+  unavailable: DiffUnavailable | null;
 }
 
 /** Settings that apply to one workspace, persisted per root. */
 export interface WorkspaceSettings {
   /** Extra gitignore-syntax globs, hidden from tree, index, and feed. */
   extraIgnores: string[];
+  /** Show git-ignored entries in the tree and file index — never the feed. */
+  showIgnored: boolean;
 }
 
 /**

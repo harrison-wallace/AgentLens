@@ -61,7 +61,11 @@ fn open_workspace(
         &app,
         &watcher_state,
         &opened.root,
-        settings::current_matcher(&settings_state),
+        watcher::Filters::new(
+            &opened.root,
+            settings::current_matcher(&settings_state),
+            settings::current(&settings_state)?.show_ignored,
+        ),
     );
     Ok(to_workspace_info(&opened))
 }
@@ -97,7 +101,13 @@ fn list_dir(
     settings_state: State<SettingsState>,
 ) -> CommandResult<Vec<DirEntryNode>> {
     let ws = workspace::current(&state)?;
-    tree::list_dir(&ws.root, &path, &settings::current_matcher(&settings_state))
+    let settings = settings::current(&settings_state)?;
+    tree::list_dir(
+        &ws.root,
+        &path,
+        &settings::current_matcher(&settings_state),
+        settings.show_ignored,
+    )
 }
 
 #[tauri::command]
@@ -106,9 +116,11 @@ fn list_files(
     settings_state: State<SettingsState>,
 ) -> CommandResult<Vec<String>> {
     let ws = workspace::current(&state)?;
+    let settings = settings::current(&settings_state)?;
     Ok(tree::list_files(
         &ws.root,
         &settings::current_matcher(&settings_state),
+        settings.show_ignored,
     ))
 }
 
@@ -179,7 +191,11 @@ fn set_workspace_settings(
         &app,
         &watcher_state,
         &ws.root,
-        settings::current_matcher(&settings_state),
+        watcher::Filters::new(
+            &ws.root,
+            settings::current_matcher(&settings_state),
+            settings::current(&settings_state)?.show_ignored,
+        ),
     );
     settings::current(&settings_state)
 }

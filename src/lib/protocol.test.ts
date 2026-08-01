@@ -30,9 +30,9 @@ describe("WorkspaceInfo", () => {
 
 describe("DirEntryNode", () => {
   it("mirrors the camelCase field names serialized by src-tauri/src/protocol.rs", () => {
-    const entry: DirEntryNode = { name: "src", path: "src", isDir: true };
+    const entry: DirEntryNode = { name: "src", path: "src", isDir: true, ignored: false };
 
-    expect(Object.keys(entry).sort()).toEqual(["isDir", "name", "path"]);
+    expect(Object.keys(entry).sort()).toEqual(["ignored", "isDir", "name", "path"]);
   });
 });
 

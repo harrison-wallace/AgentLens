@@ -126,8 +126,13 @@ export function truncateDisplay(display: DiffDisplayRow[], max: number): Truncat
 
 /** Human-readable reason the diff can't be shown, or null if it can. */
 export function diffUnavailableReason(diff: SessionDiff): string | null {
-  if (diff.unavailable) {
-    return "Diff since session needs a git repository — the baseline comes from git.";
+  switch (diff.unavailable) {
+    case "notARepository":
+      return "Diff since session needs a git repository — the baseline comes from git.";
+    case "notTracked":
+      return "Git ignores this file, so there is no session baseline to compare against.";
+    case null:
+      break;
   }
   if (diff.baseline === null && diff.current === null) {
     return "No content to compare: the file is missing, binary, or over 1 MB.";

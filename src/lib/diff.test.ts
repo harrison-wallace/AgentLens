@@ -9,7 +9,7 @@ import {
 import type { SessionDiff } from "./protocol";
 
 function sessionDiff(overrides: Partial<SessionDiff>): SessionDiff {
-  return { path: "a.txt", baseline: null, current: null, unavailable: false, ...overrides };
+  return { path: "a.txt", baseline: null, current: null, unavailable: null, ...overrides };
 }
 
 describe("toDiffRows", () => {
@@ -115,7 +115,15 @@ describe("truncateDisplay", () => {
 
 describe("diffUnavailableReason", () => {
   it("explains that a non-repository has no baseline", () => {
-    expect(diffUnavailableReason(sessionDiff({ unavailable: true }))).toMatch(/git repository/);
+    expect(diffUnavailableReason(sessionDiff({ unavailable: "notARepository" }))).toMatch(
+      /git repository/,
+    );
+  });
+
+  it("explains that git ignores the file", () => {
+    expect(diffUnavailableReason(sessionDiff({ unavailable: "notTracked" }))).toMatch(
+      /Git ignores this file/,
+    );
   });
 
   it("explains when neither side has readable content", () => {

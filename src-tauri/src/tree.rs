@@ -1,6 +1,7 @@
 //! Lazy, gitignore-aware directory listing, plus the flat file index behind
 //! the `Ctrl+P` jump.
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use ignore::gitignore::Gitignore;
@@ -20,21 +21,16 @@ const MAX_INDEXED_FILES: usize = 50_000;
 /// what's ignored.
 pub(crate) const BUILTIN_IGNORED_DIRS: [&str; 3] = [".git", "node_modules", "target"];
 
-/// List the immediate children of `relative` (workspace-relative) inside
-/// `root`, honouring `.gitignore`, the built-in ignore list, and the
-/// workspace's extra ignore globs. Directories sort before files; both are
-/// sorted by name case-insensitively.
-pub fn list_dir(
-    root: &Path,
-    relative: &str,
-    extra: &Gitignore,
-) -> Result<Vec<DirEntryNode>, String> {
-    let target = resolve_in_workspace(root, relative)?;
-
-    let mut entries: Vec<DirEntryNode> = WalkBuilder::new(&target)
+/// One directory listing pass. `honour_gitignore` off means every entry is
+/// returned; the built-in ignore list still applies either way.
+fn collect_entries(root: &Path, target: &Path, honour_gitignore: bool) -> Vec<DirEntryNode> {
+    WalkBuilder::new(target)
         .max_depth(Some(1))
         .hidden(false)
-        .git_ignore(true)
+        .git_ignore(honour_gitignore)
+        .git_exclude(honour_gitignore)
+        .git_global(honour_gitignore)
+        .ignore(honour_gitignore)
         // `ignore` only applies `.gitignore` inside a real repository by
         // default. The watcher reads it either way, so requiring git here
         // would make the tree and the feed disagree in a plain directory.
@@ -53,10 +49,49 @@ pub fn list_dir(
             let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
             let name = entry.file_name().to_string_lossy().into_owned();
             let path = to_workspace_relative(root, entry.path())?;
-            Some(DirEntryNode { name, path, is_dir })
+            Some(DirEntryNode {
+                name,
+                path,
+                is_dir,
+                ignored: false,
+            })
         })
-        .filter(|entry| !is_extra_ignored(extra, &entry.path, entry.is_dir))
-        .collect();
+        .collect()
+}
+
+/// List the immediate children of `relative` (workspace-relative) inside
+/// `root`, honouring `.gitignore`, the built-in ignore list, and the
+/// workspace's extra ignore globs. Directories sort before files; both are
+/// sorted by name case-insensitively.
+///
+/// With `show_ignored` the listing also includes entries git ignores, each
+/// flagged `ignored` so the UI can mark them. Which entries those are is
+/// worked out by listing the directory twice — once with `.gitignore` applied
+/// and once without — rather than re-implementing gitignore matching, which
+/// would drift from the walker over nested ignore files.
+pub fn list_dir(
+    root: &Path,
+    relative: &str,
+    extra: &Gitignore,
+    show_ignored: bool,
+) -> Result<Vec<DirEntryNode>, String> {
+    let target = resolve_in_workspace(root, relative)?;
+
+    let tracked = collect_entries(root, &target, true);
+    let mut entries = if show_ignored {
+        let visible: HashSet<String> = tracked.into_iter().map(|entry| entry.path).collect();
+        let mut all = collect_entries(root, &target, false);
+        for entry in &mut all {
+            entry.ignored = !visible.contains(&entry.path);
+        }
+        all
+    } else {
+        tracked
+    };
+
+    // The workspace's own globs are an explicit "hide this", distinct from
+    // git's tracking, so they keep applying even when ignored files are shown.
+    entries.retain(|entry| !is_extra_ignored(extra, &entry.path, entry.is_dir));
 
     entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
         (true, false) => std::cmp::Ordering::Less,
@@ -69,10 +104,13 @@ pub fn list_dir(
 
 /// Every non-ignored file in the workspace, workspace-relative, for the
 /// `Ctrl+P` jump. Directories are excluded — you jump to a file.
-pub fn list_files(root: &Path, extra: &Gitignore) -> Vec<String> {
+pub fn list_files(root: &Path, extra: &Gitignore, show_ignored: bool) -> Vec<String> {
     WalkBuilder::new(root)
         .hidden(false)
-        .git_ignore(true)
+        .git_ignore(!show_ignored)
+        .git_exclude(!show_ignored)
+        .git_global(!show_ignored)
+        .ignore(!show_ignored)
         .require_git(false)
         .filter_entry(|entry| {
             entry.depth() == 0
@@ -105,6 +143,7 @@ mod tests {
     fn extra(globs: &[&str]) -> WorkspaceSettings {
         WorkspaceSettings {
             extra_ignores: globs.iter().map(|g| g.to_string()).collect(),
+            ..Default::default()
         }
     }
 
@@ -121,7 +160,7 @@ mod tests {
         fs::create_dir(root.join("subdir")).unwrap();
         fs::write(root.join("subdir").join("nested.txt"), "").unwrap();
 
-        let entries = list_dir(root, "", &no_extra()).unwrap();
+        let entries = list_dir(root, "", &no_extra(), false).unwrap();
 
         let got: Vec<(String, bool)> = entries.iter().map(|e| (e.name.clone(), e.is_dir)).collect();
         assert_eq!(
@@ -145,7 +184,7 @@ mod tests {
         fs::create_dir(root.join("subdir")).unwrap();
         fs::write(root.join("subdir").join("nested.txt"), "").unwrap();
 
-        let entries = list_dir(root, "subdir", &no_extra()).unwrap();
+        let entries = list_dir(root, "subdir", &no_extra(), false).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "nested.txt");
         assert_eq!(entries[0].path, "subdir/nested.txt");
@@ -160,7 +199,7 @@ mod tests {
         fs::create_dir(root.join("build")).unwrap();
 
         let matcher = build_matcher(root, &extra(&["*.tmp", "build/"]));
-        let names: Vec<String> = list_dir(root, "", &matcher)
+        let names: Vec<String> = list_dir(root, "", &matcher, false)
             .unwrap()
             .into_iter()
             .map(|e| e.name)
@@ -182,7 +221,7 @@ mod tests {
         fs::write(root.join("node_modules/pkg/index.js"), "").unwrap();
 
         let matcher = build_matcher(root, &extra(&["*.tmp"]));
-        let mut files = list_files(root, &matcher);
+        let mut files = list_files(root, &matcher, false);
         files.sort();
 
         assert_eq!(
@@ -192,9 +231,80 @@ mod tests {
     }
 
     #[test]
+    fn show_ignored_reveals_gitignored_entries_and_flags_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join(".gitignore"), "docs/\nsecret.env\n").unwrap();
+        fs::create_dir(root.join("docs")).unwrap();
+        fs::create_dir(root.join("node_modules")).unwrap();
+        fs::write(root.join("secret.env"), "").unwrap();
+        fs::write(root.join("visible.txt"), "").unwrap();
+
+        let hidden: Vec<String> = list_dir(root, "", &no_extra(), false)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        assert_eq!(
+            hidden,
+            vec![".gitignore".to_string(), "visible.txt".to_string()]
+        );
+
+        let shown = list_dir(root, "", &no_extra(), true).unwrap();
+        let flagged: Vec<(String, bool)> =
+            shown.iter().map(|e| (e.name.clone(), e.ignored)).collect();
+        assert_eq!(
+            flagged,
+            vec![
+                ("docs".to_string(), true),
+                (".gitignore".to_string(), false),
+                ("secret.env".to_string(), true),
+                ("visible.txt".to_string(), false),
+            ],
+            "node_modules must stay hidden even with show_ignored on"
+        );
+    }
+
+    #[test]
+    fn extra_globs_still_hide_entries_when_show_ignored_is_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join(".gitignore"), "dist/\n").unwrap();
+        fs::create_dir(root.join("dist")).unwrap();
+        fs::write(root.join("scratch.tmp"), "").unwrap();
+        fs::write(root.join("keep.txt"), "").unwrap();
+
+        let matcher = build_matcher(root, &extra(&["*.tmp"]));
+        let names: Vec<String> = list_dir(root, "", &matcher, true)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+
+        // `dist/` is git-ignored so it reappears; `*.tmp` is the user's own
+        // explicit hide, so it stays gone.
+        assert!(names.contains(&"dist".to_string()));
+        assert!(!names.contains(&"scratch.tmp".to_string()));
+        assert!(names.contains(&"keep.txt".to_string()));
+    }
+
+    #[test]
+    fn list_files_includes_ignored_paths_when_asked() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join(".gitignore"), "docs/\n").unwrap();
+        fs::create_dir(root.join("docs")).unwrap();
+        fs::write(root.join("docs/PLAN.md"), "").unwrap();
+        fs::write(root.join("main.rs"), "").unwrap();
+
+        assert!(!list_files(root, &no_extra(), false).contains(&"docs/PLAN.md".to_string()));
+        assert!(list_files(root, &no_extra(), true).contains(&"docs/PLAN.md".to_string()));
+    }
+
+    #[test]
     fn rejects_traversal_outside_workspace() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        assert!(list_dir(root, "../secret", &no_extra()).is_err());
+        assert!(list_dir(root, "../secret", &no_extra(), false).is_err());
     }
 }

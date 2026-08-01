@@ -5,7 +5,7 @@ read-only window into what your terminal coding agent (Claude Code, opencode,
 …) is doing to a directory: live file tree, change feed, git status,
 read-only previews. Runs on Windows and Ubuntu.
 
-**Status:** v0.0.4 — pre-alpha, with the local-observer feature set now in
+**Status:** v0.0.5 — pre-alpha, with the local-observer feature set now in
 place and awaiting acceptance testing on both platforms.
 
 What works today:

@@ -199,7 +199,12 @@ export default function FileTree() {
               ) : (
                 <span className="inline-block w-3 shrink-0" />
               )}
-              <span className={`min-w-0 flex-1 truncate ${isLoading ? "opacity-50" : ""}`}>
+              <span
+                className={`min-w-0 flex-1 truncate ${isLoading ? "opacity-50" : ""} ${
+                  row.ignored ? "italic text-text-muted" : ""
+                }`}
+                title={row.ignored ? `${row.path} — ignored by git` : undefined}
+              >
                 {row.name}
               </span>
               {isLoading && <span className="shrink-0 text-xs text-text-muted">…</span>}

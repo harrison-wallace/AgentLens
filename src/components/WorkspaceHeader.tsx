@@ -21,6 +21,8 @@ export default function WorkspaceHeader() {
   const toggleFeed = useLayoutStore((s) => s.toggleFeed);
   const togglePreview = useLayoutStore((s) => s.togglePreview);
   const openSettings = useSettingsStore((s) => s.setOpen);
+  const showIgnored = useSettingsStore((s) => s.settings.showIgnored);
+  const toggleShowIgnored = useSettingsStore((s) => s.toggleShowIgnored);
 
   if (!workspace) return null;
 
@@ -37,6 +39,14 @@ export default function WorkspaceHeader() {
     useTreeStore.getState().clearGlow();
     // The diff tab is measured against the session baseline, which just moved.
     await usePreviewStore.getState().refresh();
+  };
+
+  // Git-ignored entries change what the tree may list, so everything already
+  // loaded has to be re-read. The feed is deliberately untouched.
+  const handleToggleIgnored = async () => {
+    if (await toggleShowIgnored()) {
+      await useTreeStore.getState().reloadLoaded();
+    }
   };
 
   return (
@@ -85,6 +95,13 @@ export default function WorkspaceHeader() {
         >
           Refresh
         </button>
+        <IconButton
+          onClick={() => void handleToggleIgnored()}
+          label={showIgnored ? "Hide git-ignored files" : "Show git-ignored files"}
+          active={showIgnored}
+        >
+          ◌
+        </IconButton>
         <IconButton onClick={() => openSettings(true)} label="Workspace settings">
           ⚙
         </IconButton>

@@ -39,6 +39,9 @@ pub struct DirEntryNode {
     /// Workspace-relative, forward slashes.
     pub path: String,
     pub is_dir: bool,
+    /// True when git ignores this entry. Always false unless the workspace
+    /// has `show_ignored` on, since ignored entries are otherwise absent.
+    pub ignored: bool,
 }
 
 /// How git sees one file.
@@ -139,6 +142,18 @@ pub enum PreviewPayload {
     TooLarge { path: String, size: u64 },
 }
 
+/// Why a "diff since session" can't be produced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DiffUnavailable {
+    /// The workspace isn't a git repository, and the baseline comes from git.
+    NotARepository,
+    /// Git ignores this file, so it has no `HEAD` blob and never appears in
+    /// the status output the session baseline is captured from. Showing it as
+    /// wholly added would misrepresent a file that may well have existed.
+    NotTracked,
+}
+
 /// The two sides of a "diff since session" comparison. The line diff itself
 /// is computed in the UI, which already has a diff library.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -149,18 +164,24 @@ pub struct SessionDiff {
     pub baseline: Option<String>,
     /// Content now; `None` if the file has since been deleted.
     pub current: Option<String>,
-    /// True when the workspace isn't a git repository, which is what the
-    /// session baseline is derived from.
-    pub unavailable: bool,
+    /// Set when no meaningful comparison exists; `None` means the diff is
+    /// usable.
+    pub unavailable: Option<DiffUnavailable>,
 }
 
 /// Settings that apply to one workspace, persisted per root.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+// `default` so settings persisted by an older version still deserialize
+// rather than resetting the whole workspace entry.
+#[serde(rename_all = "camelCase", default)]
 pub struct WorkspaceSettings {
     /// Extra gitignore-syntax globs, hidden from the tree, the file index,
     /// and the activity feed.
     pub extra_ignores: Vec<String>,
+    /// Show entries git ignores in the tree and file index. Deliberately does
+    /// not affect the activity feed: hiding ignored churn there is what keeps
+    /// an `npm install` from flooding it.
+    pub show_ignored: bool,
 }
 
 /// Event names emitted by the backend. Rust `emit` calls and TS `listen`

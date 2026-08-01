@@ -6,7 +6,7 @@ function toErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-const EMPTY: WorkspaceSettings = { extraIgnores: [] };
+const EMPTY: WorkspaceSettings = { extraIgnores: [], showIgnored: false };
 
 interface SettingsStore {
   settings: WorkspaceSettings;
@@ -17,10 +17,26 @@ interface SettingsStore {
   refresh: () => Promise<void>;
   /** Persists the globs and returns true if the save succeeded. */
   save: (extraIgnores: string[]) => Promise<boolean>;
+  /** Flips git-ignored visibility and persists it. */
+  toggleShowIgnored: () => Promise<boolean>;
   reset: () => void;
 }
 
-export const useSettingsStore = create<SettingsStore>((set) => ({
+type Setter = (patch: Partial<SettingsStore>) => void;
+
+/** Single write path, so both callers stay in step on saving/error state. */
+async function persist(set: Setter, next: WorkspaceSettings): Promise<boolean> {
+  set({ saving: true, error: null });
+  try {
+    set({ settings: await setWorkspaceSettings(next), saving: false });
+    return true;
+  } catch (err) {
+    set({ saving: false, error: toErrorMessage(err) });
+    return false;
+  }
+}
+
+export const useSettingsStore = create<SettingsStore>((set, get) => ({
   settings: EMPTY,
   open: false,
   saving: false,
@@ -38,14 +54,12 @@ export const useSettingsStore = create<SettingsStore>((set) => ({
   },
 
   save: async (extraIgnores) => {
-    set({ saving: true, error: null });
-    try {
-      set({ settings: await setWorkspaceSettings({ extraIgnores }), saving: false });
-      return true;
-    } catch (err) {
-      set({ saving: false, error: toErrorMessage(err) });
-      return false;
-    }
+    return persist(set, { ...get().settings, extraIgnores });
+  },
+
+  toggleShowIgnored: async () => {
+    const settings = get().settings;
+    return persist(set, { ...settings, showIgnored: !settings.showIgnored });
   },
 
   reset: () => set({ settings: EMPTY, open: false, saving: false, error: null }),

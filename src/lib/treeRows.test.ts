@@ -3,7 +3,12 @@ import { countsFor, flattenTree, gitBadgeFor, parentDirsOf } from "./treeRows";
 import type { DirEntryNode, GitFileStatus, GitStatusKind } from "./protocol";
 
 function entry(name: string, path: string, isDir: boolean): DirEntryNode {
-  return { name, path, isDir };
+  return { name, path, isDir, ignored: false };
+}
+
+/** Expected tree row; `ignored` is false unless a case says otherwise. */
+function row(name: string, path: string, isDir: boolean, depth: number, ignored = false) {
+  return { name, path, isDir, depth, ignored };
 }
 
 describe("flattenTree", () => {
@@ -17,9 +22,9 @@ describe("flattenTree", () => {
     const rows = flattenTree(childrenByPath, expanded);
 
     expect(rows).toEqual([
-      { name: "src", path: "src", isDir: true, depth: 0 },
-      { name: "main.ts", path: "src/main.ts", isDir: false, depth: 1 },
-      { name: "README.md", path: "README.md", isDir: false, depth: 0 },
+      row("src", "src", true, 0),
+      row("main.ts", "src/main.ts", false, 1),
+      row("README.md", "README.md", false, 0),
     ]);
   });
 
@@ -31,7 +36,7 @@ describe("flattenTree", () => {
 
     const rows = flattenTree(childrenByPath, new Set());
 
-    expect(rows).toEqual([{ name: "src", path: "src", isDir: true, depth: 0 }]);
+    expect(rows).toEqual([row("src", "src", true, 0)]);
   });
 
   it("emits the row for an expanded-but-unloaded directory with no children", () => {
@@ -43,7 +48,7 @@ describe("flattenTree", () => {
 
     const rows = flattenTree(childrenByPath, expanded);
 
-    expect(rows).toEqual([{ name: "src", path: "src", isDir: true, depth: 0 }]);
+    expect(rows).toEqual([row("src", "src", true, 0)]);
   });
 
   it("returns no rows when the root itself has not loaded", () => {
@@ -71,9 +76,9 @@ describe("flattenTree", () => {
     const rows = flattenTree(childrenByPath, expanded);
 
     expect(rows).toEqual([
-      { name: "a", path: "a", isDir: true, depth: 0 },
-      { name: "b", path: "a/b", isDir: true, depth: 1 },
-      { name: "c.ts", path: "a/b/c.ts", isDir: false, depth: 2 },
+      row("a", "a", true, 0),
+      row("b", "a/b", true, 1),
+      row("c.ts", "a/b/c.ts", false, 2),
     ]);
   });
 });

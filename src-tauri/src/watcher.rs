@@ -47,6 +47,54 @@ use crate::tree::BUILTIN_IGNORED_DIRS;
 /// (by first-seen order) rather than flooding the UI.
 const MAX_BATCH: usize = 500;
 
+/// Everything that decides whether a path reaches the feed, kept together so
+/// the watch registration and the event filter can't disagree about it.
+pub struct Filters {
+    /// The workspace's `.gitignore` and `.git/info/exclude`.
+    gitignore: Gitignore,
+    /// The workspace's own extra globs.
+    extra: Gitignore,
+    /// When set, git-ignored paths are watched and surfaced. The built-in
+    /// list still applies, which is what keeps `node_modules` churn out of
+    /// the feed regardless of this flag.
+    show_ignored: bool,
+}
+
+impl Filters {
+    pub fn new(root: &Path, extra: Gitignore, show_ignored: bool) -> Self {
+        Filters {
+            gitignore: build_gitignore(root),
+            extra,
+            show_ignored,
+        }
+    }
+
+    /// True if `relative` should be dropped from the feed.
+    fn is_ignored(&self, relative: &str, is_dir: bool) -> bool {
+        if relative
+            .split('/')
+            .any(|part| BUILTIN_IGNORED_DIRS.contains(&part))
+        {
+            return true;
+        }
+        // The empty path is the workspace root itself. Some platforms report a
+        // modify on the parent directory alongside the real change; surfacing
+        // it would put a blank row in the feed.
+        if relative.is_empty() {
+            return true;
+        }
+        if is_extra_ignored(&self.extra, relative, is_dir) {
+            return true;
+        }
+        if self.show_ignored {
+            return false;
+        }
+        self.gitignore
+            .matched_path_or_any_parents(relative, is_dir)
+            .is_ignore()
+    }
+}
+
 /// Holds the (at most one) active watch and the last known status. Dropping
 /// the `Debouncer` stops the underlying OS watch and its background thread,
 /// so replacing or clearing `debouncer` is enough to stop watching.
@@ -103,11 +151,10 @@ pub fn status(manager: &WatcherManager) -> WatcherStatus {
 /// Watching every descendant directory means walking the workspace, which on
 /// a large repo takes seconds cold, so it happens on the background thread
 /// instead; `open_workspace` must not wait for it.
-pub fn start(app: &AppHandle, manager: &WatcherManager, root: &Path, extra: Gitignore) {
+pub fn start(app: &AppHandle, manager: &WatcherManager, root: &Path, filters: Filters) {
     let generation = manager.generation.fetch_add(1, Ordering::SeqCst) + 1;
     stop_internal(manager);
 
-    let gitignore = build_gitignore(root);
     let (tx, rx) = mpsc::channel::<DebounceEventResult>();
 
     let mut debouncer = match new_debouncer(Duration::from_millis(300), None, tx) {
@@ -137,12 +184,13 @@ pub fn start(app: &AppHandle, manager: &WatcherManager, root: &Path, extra: Giti
     let app_for_thread = app.clone();
     let root_for_thread = root.to_path_buf();
     let generation_handle = Arc::clone(&manager.generation);
+    let show_ignored = filters.show_ignored;
     std::thread::spawn(move || {
         // Everything below the root gets its watch here rather than on the
         // command thread. Until this returns only the root is covered, so a
         // write deep in the tree during the first moments of a session can be
         // missed; root events are not lost, they queue in `rx`.
-        register_descendant_watches(&app_for_thread, &root_for_thread, generation);
+        register_descendant_watches(&app_for_thread, &root_for_thread, generation, show_ignored);
 
         while let Ok(result) = rx.recv() {
             if generation_handle.load(Ordering::SeqCst) != generation {
@@ -152,8 +200,7 @@ pub fn start(app: &AppHandle, manager: &WatcherManager, root: &Path, extra: Giti
                 Ok(events) => handle_batch(
                     &app_for_thread,
                     &root_for_thread,
-                    &gitignore,
-                    &extra,
+                    &filters,
                     generation,
                     events,
                 ),
@@ -216,11 +263,14 @@ fn build_gitignore(root: &Path) -> Gitignore {
 /// A walk of `from` with ignored subtrees pruned. `.gitignore` files in
 /// parent directories are honoured, so this stays correct when walking a
 /// subdirectory rather than the workspace root.
-fn watchable_walker(from: &Path) -> WalkBuilder {
+fn watchable_walker(from: &Path, show_ignored: bool) -> WalkBuilder {
     let mut builder = WalkBuilder::new(from);
     builder
         .hidden(false)
-        .git_ignore(true)
+        .git_ignore(!show_ignored)
+        .git_exclude(!show_ignored)
+        .git_global(!show_ignored)
+        .ignore(!show_ignored)
         .filter_entry(|entry| {
             // Depth 0 is `from` itself: a workspace that happens to be named
             // `target` still has to be walked.
@@ -239,28 +289,30 @@ fn watchable_walker(from: &Path) -> WalkBuilder {
 /// where descendants are still unwatched. Not used for the incremental path,
 /// where spawning a thread pool per newly created directory would cost more
 /// than it saves.
-fn watchable_dirs_parallel(from: &Path) -> Vec<PathBuf> {
+fn watchable_dirs_parallel(from: &Path, show_ignored: bool) -> Vec<PathBuf> {
     let collected = Mutex::new(Vec::new());
-    watchable_walker(from).build_parallel().run(|| {
-        Box::new(|entry| {
-            if let Ok(entry) = entry {
-                if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                    if let Ok(mut guard) = collected.lock() {
-                        guard.push(entry.into_path());
+    watchable_walker(from, show_ignored)
+        .build_parallel()
+        .run(|| {
+            Box::new(|entry| {
+                if let Ok(entry) = entry {
+                    if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                        if let Ok(mut guard) = collected.lock() {
+                            guard.push(entry.into_path());
+                        }
                     }
                 }
-            }
-            ignore::WalkState::Continue
-        })
-    });
+                ignore::WalkState::Continue
+            })
+        });
     collected.into_inner().unwrap_or_default()
 }
 
 /// `from` plus every descendant directory that isn't ignored — the set of
 /// directories that need their own non-recursive watch. Built-in ignores
 /// prune whole subtrees, so `node_modules` contributes nothing.
-fn watchable_dirs(from: &Path) -> Vec<PathBuf> {
-    watchable_walker(from)
+fn watchable_dirs(from: &Path, show_ignored: bool) -> Vec<PathBuf> {
+    watchable_walker(from, show_ignored)
         .build()
         .filter_map(|entry| entry.ok())
         .filter(|entry| entry.file_type().map(|t| t.is_dir()).unwrap_or(false))
@@ -270,8 +322,8 @@ fn watchable_dirs(from: &Path) -> Vec<PathBuf> {
 
 /// Give every non-ignored descendant directory its own watch. Runs once per
 /// session on the watcher thread.
-fn register_descendant_watches(app: &AppHandle, root: &Path, generation: u64) {
-    let dirs = watchable_dirs_parallel(root);
+fn register_descendant_watches(app: &AppHandle, root: &Path, generation: u64, show_ignored: bool) {
+    let dirs = watchable_dirs_parallel(root, show_ignored);
 
     let manager = app.state::<WatcherManager>();
     // The workspace can be closed or swapped while the walk is in flight.
@@ -316,8 +368,7 @@ fn watch_git_dir(debouncer: &mut Debouncer<RecommendedWatcher, RecommendedCache>
 fn adopt_new_dirs(
     app: &AppHandle,
     root: &Path,
-    gitignore: &Gitignore,
-    extra: &Gitignore,
+    filters: &Filters,
     batch: &[FsEvent],
     generation: u64,
     at: i64,
@@ -350,14 +401,14 @@ fn adopt_new_dirs(
 
     let mut adopted = Vec::new();
     for dir in appeared {
-        for nested in watchable_dirs(&dir) {
+        for nested in watchable_dirs(&dir, filters.show_ignored) {
             let _ = debouncer.watch(&nested, RecursiveMode::NonRecursive);
         }
         adopted.extend(
-            existing_entries_under(&dir)
+            existing_entries_under(&dir, filters.show_ignored)
                 .iter()
                 .filter_map(|path| to_fs_event(root, path, FsEventKind::Created, path.is_dir(), at))
-                .filter(|event| !is_ignored(gitignore, extra, &event.path, event.is_dir)),
+                .filter(|event| !filters.is_ignored(&event.path, event.is_dir)),
         );
         if adopted.len() >= MAX_BATCH {
             break;
@@ -368,8 +419,8 @@ fn adopt_new_dirs(
 
 /// Everything under `from`, excluding `from` itself, with ignored subtrees
 /// pruned. Capped, so moving a large directory in can't stall the batch.
-fn existing_entries_under(from: &Path) -> Vec<PathBuf> {
-    watchable_walker(from)
+fn existing_entries_under(from: &Path, show_ignored: bool) -> Vec<PathBuf> {
+    watchable_walker(from, show_ignored)
         .build()
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.into_path())
@@ -416,31 +467,6 @@ fn to_fs_event(
         is_dir,
         at,
     })
-}
-
-/// True if `relative` should be dropped from the feed: a path component
-/// matches the built-in ignore list, or the workspace's `.gitignore` /
-/// `.git/info/exclude` matches it, or it matches the workspace's extra
-/// ignore globs. Pure given already-built matchers.
-fn is_ignored(gitignore: &Gitignore, extra: &Gitignore, relative: &str, is_dir: bool) -> bool {
-    if relative
-        .split('/')
-        .any(|part| BUILTIN_IGNORED_DIRS.contains(&part))
-    {
-        return true;
-    }
-    // The empty path is the workspace root itself. Some platforms report a
-    // modify on the parent directory alongside the real change; surfacing it
-    // would put a blank row in the feed.
-    if relative.is_empty() {
-        return true;
-    }
-    if is_extra_ignored(extra, relative, is_dir) {
-        return true;
-    }
-    gitignore
-        .matched_path_or_any_parents(relative, is_dir)
-        .is_ignore()
 }
 
 /// Coalesce a batch to at most one event per path (last kind wins — a
@@ -513,8 +539,7 @@ fn touches_git_dir(relative: &str) -> bool {
 fn handle_batch(
     app: &AppHandle,
     root: &Path,
-    gitignore: &Gitignore,
-    extra: &Gitignore,
+    filters: &Filters,
     generation: u64,
     events: Vec<DebouncedEvent>,
 ) {
@@ -526,7 +551,7 @@ fn handle_batch(
     let git_dir_touched = raw.iter().any(|event| touches_git_dir(&event.path));
     let filtered: Vec<FsEvent> = raw
         .into_iter()
-        .filter(|event| !is_ignored(gitignore, extra, &event.path, event.is_dir))
+        .filter(|event| !filters.is_ignored(&event.path, event.is_dir))
         .collect();
     let batch = coalesce(filtered, MAX_BATCH);
 
@@ -537,7 +562,7 @@ fn handle_batch(
     if !batch.is_empty() {
         // Adopting first means content that arrived with a new directory is
         // part of the same emitted batch rather than a second one.
-        let adopted = adopt_new_dirs(app, root, gitignore, extra, &batch, generation, at);
+        let adopted = adopt_new_dirs(app, root, filters, &batch, generation, at);
         let batch = if adopted.is_empty() {
             batch
         } else {
@@ -647,47 +672,41 @@ mod tests {
         assert_eq!(event, None);
     }
 
-    // -- is_ignored ---------------------------------------------------------
+    // -- Filters::is_ignored ------------------------------------------------
+
+    /// Filters for `root` with no extra globs.
+    fn filters_for(root: &Path, show_ignored: bool) -> Filters {
+        Filters::new(root, Gitignore::empty(), show_ignored)
+    }
 
     #[test]
     fn is_ignored_drops_builtin_dirs_at_any_depth() {
-        let gitignore = Gitignore::empty();
-        assert!(is_ignored(
-            &gitignore,
-            &Gitignore::empty(),
-            "node_modules/x/y.js",
-            false
-        ));
-        assert!(is_ignored(
-            &gitignore,
-            &Gitignore::empty(),
-            ".git/HEAD",
-            false
-        ));
-        assert!(is_ignored(
-            &gitignore,
-            &Gitignore::empty(),
-            "target/debug/build",
-            true
-        ));
-        assert!(!is_ignored(
-            &gitignore,
-            &Gitignore::empty(),
-            "src/main.rs",
-            false
-        ));
+        let dir = tempfile::tempdir().unwrap();
+        let f = filters_for(dir.path(), false);
+        assert!(f.is_ignored("node_modules/x/y.js", false));
+        assert!(f.is_ignored(".git/HEAD", false));
+        assert!(f.is_ignored("target/debug/build", true));
+        assert!(!f.is_ignored("src/main.rs", false));
+    }
+
+    #[test]
+    fn builtin_dirs_stay_ignored_even_when_showing_ignored_files() {
+        // This is what preserves "an `npm install` produces zero feed spam"
+        // regardless of the toggle.
+        let dir = tempfile::tempdir().unwrap();
+        let f = filters_for(dir.path(), true);
+        assert!(f.is_ignored("node_modules/left-pad/index.js", false));
+        assert!(f.is_ignored("target/debug/build", true));
+        assert!(f.is_ignored(".git/HEAD", false));
     }
 
     #[test]
     fn is_ignored_drops_the_workspace_root_itself() {
         // A modify reported against the root would otherwise reach the feed
         // as a row with a blank path.
-        assert!(is_ignored(
-            &Gitignore::empty(),
-            &Gitignore::empty(),
-            "",
-            true
-        ));
+        let dir = tempfile::tempdir().unwrap();
+        assert!(filters_for(dir.path(), false).is_ignored("", true));
+        assert!(filters_for(dir.path(), true).is_ignored("", true));
     }
 
     #[test]
@@ -695,26 +714,22 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         stdfs::write(root.join(".gitignore"), "dist/\n*.log\n").unwrap();
-        let gitignore = build_gitignore(root);
+        let f = filters_for(root, false);
 
-        assert!(is_ignored(
-            &gitignore,
-            &Gitignore::empty(),
-            "dist/bundle.js",
-            false
-        ));
-        assert!(is_ignored(
-            &gitignore,
-            &Gitignore::empty(),
-            "debug.log",
-            false
-        ));
-        assert!(!is_ignored(
-            &gitignore,
-            &Gitignore::empty(),
-            "src/main.rs",
-            false
-        ));
+        assert!(f.is_ignored("dist/bundle.js", false));
+        assert!(f.is_ignored("debug.log", false));
+        assert!(!f.is_ignored("src/main.rs", false));
+    }
+
+    #[test]
+    fn show_ignored_lets_gitignored_paths_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        stdfs::write(root.join(".gitignore"), "dist/\n*.log\n").unwrap();
+        let f = filters_for(root, true);
+
+        assert!(!f.is_ignored("dist/bundle.js", false));
+        assert!(!f.is_ignored("debug.log", false));
     }
 
     #[test]
@@ -727,60 +742,34 @@ mod tests {
             "local-only/\n",
         )
         .unwrap();
-        let gitignore = build_gitignore(root);
+        let f = filters_for(root, false);
 
-        assert!(is_ignored(
-            &gitignore,
-            &Gitignore::empty(),
-            "local-only/scratch.txt",
-            false
-        ));
-        assert!(!is_ignored(
-            &gitignore,
-            &Gitignore::empty(),
-            "src/main.rs",
-            false
-        ));
+        assert!(f.is_ignored("local-only/scratch.txt", false));
+        assert!(!f.is_ignored("src/main.rs", false));
     }
 
     #[test]
     fn build_gitignore_is_fine_with_no_gitignore_file() {
         let dir = tempfile::tempdir().unwrap();
-        let gitignore = build_gitignore(dir.path());
-        assert!(!is_ignored(
-            &gitignore,
-            &Gitignore::empty(),
-            "src/main.rs",
-            false
-        ));
+        assert!(!filters_for(dir.path(), false).is_ignored("src/main.rs", false));
     }
 
     #[test]
-    fn is_ignored_honours_the_workspaces_extra_globs() {
+    fn extra_globs_apply_regardless_of_the_show_ignored_toggle() {
+        let dir = tempfile::tempdir().unwrap();
         let extra = crate::settings::build_matcher(
-            Path::new("/workspace"),
+            dir.path(),
             &crate::protocol::WorkspaceSettings {
                 extra_ignores: vec!["*.tmp".to_string(), "vendor/".to_string()],
+                ..Default::default()
             },
         );
-        assert!(is_ignored(
-            &Gitignore::empty(),
-            &extra,
-            "scratch.tmp",
-            false
-        ));
-        assert!(is_ignored(
-            &Gitignore::empty(),
-            &extra,
-            "vendor/lib/x.rs",
-            false
-        ));
-        assert!(!is_ignored(
-            &Gitignore::empty(),
-            &extra,
-            "src/main.rs",
-            false
-        ));
+        for show_ignored in [false, true] {
+            let f = Filters::new(dir.path(), extra.clone(), show_ignored);
+            assert!(f.is_ignored("scratch.tmp", false));
+            assert!(f.is_ignored("vendor/lib/x.rs", false));
+            assert!(!f.is_ignored("src/main.rs", false));
+        }
     }
 
     // -- touches_git_dir --------------------------------------------------
@@ -800,7 +789,7 @@ mod tests {
     /// Workspace-relative, forward-slash names of the walked directories, so
     /// assertions don't depend on the tempdir path.
     fn relative_dirs(root: &Path) -> Vec<String> {
-        let mut names: Vec<String> = watchable_dirs(root)
+        let mut names: Vec<String> = watchable_dirs(root, false)
             .iter()
             .map(|dir| to_workspace_relative(root, dir).unwrap())
             .collect();
@@ -848,7 +837,7 @@ mod tests {
         }
 
         let mut sequential = relative_dirs(root);
-        let mut parallel: Vec<String> = watchable_dirs_parallel(root)
+        let mut parallel: Vec<String> = watchable_dirs_parallel(root, false)
             .iter()
             .map(|d| to_workspace_relative(root, d).unwrap())
             .collect();

@@ -143,6 +143,7 @@ mod tests {
     fn settings(globs: &[&str]) -> WorkspaceSettings {
         WorkspaceSettings {
             extra_ignores: globs.iter().map(|g| g.to_string()).collect(),
+            ..Default::default()
         }
     }
 

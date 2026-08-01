@@ -10,6 +10,8 @@ export interface TreeRow {
   path: string;
   isDir: boolean;
   depth: number;
+  /** Git ignores this entry; the tree dims it. */
+  ignored: boolean;
 }
 
 /**
@@ -28,7 +30,13 @@ export function flattenTree(
     const children = childrenByPath[path];
     if (!children) return;
     for (const child of children) {
-      rows.push({ name: child.name, path: child.path, isDir: child.isDir, depth });
+      rows.push({
+        name: child.name,
+        path: child.path,
+        isDir: child.isDir,
+        depth,
+        ignored: child.ignored,
+      });
       if (child.isDir && expanded.has(child.path)) {
         walk(child.path, depth + 1);
       }

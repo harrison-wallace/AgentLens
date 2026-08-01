@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.5] - 2026-08-01
+
+### Added
+
+- A header toggle for showing git-ignored files. `.gitignore` marks both
+  build noise and personal-but-important files — planning docs, agent
+  context files — and the app previously treated both as uninteresting, so
+  there was no way to see the latter at all. Ignored entries appear dimmed
+  and italic, in the tree and the `Ctrl+P` jump, persisted per workspace and
+  off by default.
+- The activity feed and tree follow that toggle, so ignored files also
+  update live rather than only on Refresh. `.git`, `node_modules` and
+  `target` stay filtered regardless — that, not the gitignore filter, is
+  what keeps an `npm install` from flooding the feed.
+
+### Changed
+
+- Extra ignore globs now apply whether or not ignored files are shown, so a
+  noisy directory can be excluded individually instead of having to turn the
+  whole toggle off.
+- Watcher filtering moved into a single `Filters` type. Watch registration
+  and event filtering were deciding "is this ignored" from three separately
+  threaded arguments and could disagree.
+
+### Fixed
+
+- "Diff since session" showed a git-ignored file as wholly added, even when
+  it already existed with different content. Git has no baseline for a file
+  it doesn't track, so the tab now says so instead of inventing one.
+- Settings saved by an earlier version no longer reset when a new setting is
+  introduced.
+
 ## [0.0.4] - 2026-08-01
 
 ### Changed

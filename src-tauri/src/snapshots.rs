@@ -23,7 +23,7 @@ use git2::Repository;
 
 use crate::gitstatus;
 use crate::paths::{resolve_existing_in_workspace, resolve_in_workspace};
-use crate::protocol::SessionDiff;
+use crate::protocol::{DiffUnavailable, SessionDiff};
 
 /// Per-file cap for both baseline and current content, matching the plan.
 const MAX_SNAPSHOT_BYTES: u64 = 1024 * 1024;
@@ -102,12 +102,13 @@ pub fn diff(state: &SessionState, root: &Path, relative: &str) -> Result<Session
     };
 
     if !session.is_repository {
-        return Ok(SessionDiff {
-            path: relative.to_string(),
-            baseline: None,
-            current: None,
-            unavailable: true,
-        });
+        return Ok(unavailable(relative, DiffUnavailable::NotARepository));
+    }
+    // An ignored file has no HEAD blob and never appears in git's status, so
+    // both baseline sources come up empty for it — which would render as a
+    // brand-new file rather than as "git can't tell you".
+    if is_git_ignored(root, relative) {
+        return Ok(unavailable(relative, DiffUnavailable::NotTracked));
     }
 
     let baseline = match session.captured.get(relative) {
@@ -119,8 +120,25 @@ pub fn diff(state: &SessionState, root: &Path, relative: &str) -> Result<Session
         path: relative.to_string(),
         baseline,
         current: current_path.as_deref().and_then(read_text_capped),
-        unavailable: false,
+        unavailable: None,
     })
+}
+
+fn unavailable(relative: &str, why: DiffUnavailable) -> SessionDiff {
+    SessionDiff {
+        path: relative.to_string(),
+        baseline: None,
+        current: None,
+        unavailable: Some(why),
+    }
+}
+
+/// True if git ignores `relative`. Best-effort: an unreadable repo just means
+/// we fall through to the normal baseline lookup.
+fn is_git_ignored(root: &Path, relative: &str) -> bool {
+    Repository::open(root)
+        .and_then(|repo| repo.is_path_ignored(Path::new(relative)))
+        .unwrap_or(false)
 }
 
 /// Read a file as UTF-8, or `None` if it's missing, oversized, or not text.
@@ -185,7 +203,7 @@ mod tests {
         fs::write(root.join("a.txt"), "one\ntwo\n").unwrap();
 
         let diff = diff(&state, root, "a.txt").unwrap();
-        assert!(!diff.unavailable);
+        assert_eq!(diff.unavailable, None);
         assert_eq!(diff.baseline.as_deref(), Some("one\n"));
         assert_eq!(diff.current.as_deref(), Some("one\ntwo\n"));
     }
@@ -266,7 +284,27 @@ mod tests {
 
         let state = state_for(root);
         let diff = diff(&state, root, "a.txt").unwrap();
-        assert!(diff.unavailable);
+        assert_eq!(diff.unavailable, Some(DiffUnavailable::NotARepository));
+        assert_eq!(diff.baseline, None);
+        assert_eq!(diff.current, None);
+    }
+
+    #[test]
+    fn gitignored_file_reports_not_tracked_rather_than_wholly_added() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let repo = Repository::init(root).unwrap();
+        fs::write(root.join(".gitignore"), "dist/\n").unwrap();
+        fs::create_dir(root.join("dist")).unwrap();
+        fs::write(root.join("dist/out.js"), "before\n").unwrap();
+        commit_all(&repo, "initial");
+
+        let state = state_for(root);
+        fs::write(root.join("dist/out.js"), "before\nafter\n").unwrap();
+
+        // It existed with different content, so "wholly added" would be a lie.
+        let diff = diff(&state, root, "dist/out.js").unwrap();
+        assert_eq!(diff.unavailable, Some(DiffUnavailable::NotTracked));
         assert_eq!(diff.baseline, None);
         assert_eq!(diff.current, None);
     }
