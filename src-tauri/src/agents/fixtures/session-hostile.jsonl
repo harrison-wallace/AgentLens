@@ -1,0 +1,6 @@
+{"type":"assistant","cwd":"/work/demo","sessionId":"2222bbbb-0000-4000-8000-000000000002","timestamp":"2026-03-04T10:00:00.000Z","uuid":"h1","version":null,"isSidechain":null,"message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Edit","input":{"file_path":"/work/demo/kept.rs"}}]}}
+{"type":"some-future-record-type","sessionId":"2222bbbb-0000-4000-8000-000000000002","payload":{"anything":true}}
+this line is not json at all
+{"type":"assistant","cwd":"/work/demo","sessionId":"2222bbbb-0000-4000-8000-000000000002","timestamp":"not-a-timestamp","uuid":"h2","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Edit","input":{"file_path":"/work/demo/dropped.rs"}}]}}
+{"type":"assistant","cwd":"/work/demo","sessionId":"2222bbbb-0000-4000-8000-000000000002","timestamp":"2026-03-04T10:00:20.000Z","uuid":"h3","isSidechain":true,"message":{"role":"assistant","content":[{"type":"tool_use","id":"t3","name":"Edit","input":{"file_path":"/elsewhere/outside.rs"}}]}}
+{"type":"assistant","cwd":"/work/demo","sessionId":"2222bbbb-0000-4000-8000-000000000002","timestamp":"2026-03-04T10:00:30.000Z","uuid":"h4","message":{"role":"assistant","content":[]}}

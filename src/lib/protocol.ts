@@ -123,6 +123,74 @@ export interface WorkspaceSettings {
 export interface AppSettings {
   /** Surface `AGENTS.md` and friends whatever `.gitignore` says. */
   showAgentContext: boolean;
+  /**
+   * Extra directories to search for agent sessions, added to whatever the app
+   * detects itself. The escape hatch for a layout detection can't guess.
+   */
+  agentRoots: string[];
+}
+
+/** Which coding agent a session belongs to. */
+export type AgentKind = "claudeCode" | "opencode";
+
+/** One directory the app searches for agent sessions, as shown in settings. */
+export interface AgentRootInfo {
+  /** Absolute path, forward slashes — these live outside any workspace. */
+  path: string;
+  /**
+   * Which agent recognises this directory. `null` means none did: for a path
+   * the user typed, that is why they see no sessions, so it must be shown.
+   */
+  agent: AgentKind | null;
+  /** Found automatically, as opposed to named by the user. */
+  detected: boolean;
+}
+
+/** A session the app has found on disk but isn't necessarily tailing yet. */
+export interface SessionRef {
+  /** Provider-assigned id, unique per provider. */
+  id: string;
+  agent: AgentKind;
+  /** Generated session title, when the provider supplies one. */
+  title: string | null;
+  /** Unix epoch milliseconds of the most recent record seen. */
+  lastActivity: number;
+}
+
+/**
+ * One thing an agent did, normalized across providers. Discriminated on
+ * `kind`, mirroring the Rust tagged enum.
+ */
+export type AgentEvent =
+  | {
+      kind: "sessionStarted";
+      sessionId: string;
+      agent: AgentKind;
+      title: string | null;
+      at: number;
+    }
+  | {
+      kind: "toolCall";
+      sessionId: string;
+      at: number;
+      tool: string;
+      /** One-line description of what the call was for, when derivable. */
+      summary: string | null;
+      /** Workspace-relative, forward slashes. */
+      paths: string[];
+      /** The work of a subagent rather than the main thread. */
+      sidechain: boolean;
+    }
+  | { kind: "assistantNote"; sessionId: string; at: number; text: string }
+  | { kind: "sessionEnded"; sessionId: string; at: number };
+
+/** The result of tailing a session: what happened, plus what couldn't be read. */
+export interface AgentPoll {
+  events: AgentEvent[];
+  /** Records read since the workspace opened. */
+  records: number;
+  /** Of those, how many could not be parsed. */
+  skipped: number;
 }
 
 /**

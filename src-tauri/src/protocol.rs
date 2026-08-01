@@ -216,14 +216,112 @@ pub struct AppSettings {
     /// friends) whatever `.gitignore` says. App-level because "always show me
     /// `AGENTS.md`" is how you work, not a property of one repo.
     pub show_agent_context: bool,
+    /// Extra directories to search for agent sessions, added to whatever the
+    /// app detects by itself.
+    ///
+    /// Needed because detection can only ever be a guess: an agent's storage
+    /// location is a convention its authors never promised, and where a user
+    /// keeps multiple profiles is a convention on top of that. Anyone whose
+    /// layout we can't guess has no other way to make the feature work.
+    pub agent_roots: Vec<String>,
 }
 
 impl Default for AppSettings {
     fn default() -> Self {
         AppSettings {
             show_agent_context: true,
+            agent_roots: Vec::new(),
         }
     }
+}
+
+/// Which coding agent a session belongs to. Providers are added behind the
+/// `AgentProvider` trait, so this grows without anything downstream changing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentKind {
+    ClaudeCode,
+    Opencode,
+}
+
+/// One directory the app searches for agent sessions, as shown in settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRootInfo {
+    /// Absolute path, forward slashes. Not workspace-relative — these live
+    /// outside any workspace, which is the whole point of them.
+    pub path: String,
+    /// Which agent recognises this directory. `None` means none did: for a
+    /// path the user typed, that is the explanation for why they see no
+    /// sessions, so the UI has to say so rather than skip it quietly.
+    pub agent: Option<AgentKind>,
+    /// Found automatically, as opposed to named by the user.
+    pub detected: bool,
+}
+
+/// A session the app has found on disk but is not necessarily tailing yet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRef {
+    /// Provider-assigned id, unique per provider.
+    pub id: String,
+    pub agent: AgentKind,
+    /// Generated session title, when the provider supplies one.
+    pub title: Option<String>,
+    /// Unix epoch milliseconds of the most recent record seen.
+    pub last_activity: i64,
+}
+
+/// One thing an agent did, normalized across providers. Everything
+/// downstream — correlation, the feed, the session panel — consumes only
+/// this, so adding a provider touches nothing outside `agents/`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum AgentEvent {
+    SessionStarted {
+        session_id: String,
+        agent: AgentKind,
+        title: Option<String>,
+        at: i64,
+    },
+    /// A single tool invocation. `paths` are workspace-relative with forward
+    /// slashes like every other path in the protocol, and exclude anything
+    /// the tool touched outside the workspace.
+    ToolCall {
+        session_id: String,
+        at: i64,
+        tool: String,
+        /// One-line description of what the call was for, when derivable.
+        summary: Option<String>,
+        paths: Vec<String>,
+        /// The work of a subagent rather than the main thread.
+        sidechain: bool,
+    },
+    /// The instruction the session is currently working on — the "why" behind
+    /// the tool calls around it.
+    AssistantNote {
+        session_id: String,
+        at: i64,
+        text: String,
+    },
+    SessionEnded {
+        session_id: String,
+        at: i64,
+    },
+}
+
+/// The result of tailing a session: what happened, plus how much of the
+/// transcript the app failed to understand. The count is surfaced quietly in
+/// the UI rather than as an error — these formats drift without warning, and
+/// the app still works when it can only read some of a session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPoll {
+    pub events: Vec<AgentEvent>,
+    /// Records read since the workspace opened.
+    pub records: u64,
+    /// Of those, how many could not be parsed.
+    pub skipped: u64,
 }
 
 /// Event names emitted by the backend. Rust `emit` calls and TS `listen`

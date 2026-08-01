@@ -1,14 +1,27 @@
 # AgentLens
 
+[![CI](https://img.shields.io/github/actions/workflow/status/harrison-wallace/AgentLens/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/harrison-wallace/AgentLens/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/actions/workflow/status/harrison-wallace/AgentLens/release.yml?style=flat-square&label=release)](https://github.com/harrison-wallace/AgentLens/actions/workflows/release.yml)
+[![Version](https://img.shields.io/badge/version-0.0.7-6366f1?style=flat-square)](CHANGELOG.md)
+[![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
+
+[![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app)
+[![Rust](https://img.shields.io/badge/Rust-stable-CE422B?style=flat-square&logo=rust&logoColor=white)](https://www.rust-lang.org)
+[![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=white)](https://react.dev)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
+[![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Ubuntu-6b7280?style=flat-square)](#install)
+
 A lightweight, open-source observer for agentic coding. Not an IDE — a
 read-only window into what your terminal coding agent (Claude Code, opencode,
 …) is doing to a directory: live file tree, change feed, git status,
 read-only previews. Runs on Windows and Ubuntu.
 
-**Status:** v0.0.6 — pre-alpha, with the local-observer feature set now in
+**Status:** v0.0.7 — pre-alpha, with the local-observer feature set now in
 place and awaiting acceptance testing on both platforms.
 
-What works today:
+<!-- TODO: screenshot once Phase 1 (local observer) lands -->
+
+## What works today
 
 - **Live file tree** — virtualized, lazy, gitignore-aware, with git status
   badges and a fading highlight on whatever just changed.
@@ -27,8 +40,6 @@ What works today:
 - **`Ctrl+P` file jump**, arrow-key tree navigation, resizable and
   collapsible panels, and per-workspace extra ignore globs.
 
-<!-- TODO: screenshot once Phase 1 (local observer) lands -->
-
 ## Why not VS Code / a file explorer
 
 AgentLens is not an editor. It doesn't open files for editing and it doesn't
@@ -37,22 +48,52 @@ changes with what your terminal agent is doing, in a window you can leave
 open next to your terminal. If you want to edit something, open it in your
 real editor; AgentLens stays out of the way.
 
+Three rules follow from that, and they explain most of the design:
+
+- **Read-only by default.** Previews never edit. Git operations are the only
+  thing that will ever mutate your repository.
+- **Ignore aggressively, but not blindly.** `.gitignore` marks two different
+  things — build noise, and files that are yours rather than the team's. The
+  first is hidden; the second (agent context files, anything you pin) stays
+  visible.
+- **Debounce everything.** Agents write in bursts. The feed and the tree
+  coalesce them instead of flickering once per file.
+
+## Configuration
+
+Settings are split by what they affect, not where they're stored.
+
+| Scope              | Setting                | Purpose                                                                         |
+| ------------------ | ---------------------- | ------------------------------------------------------------------------------- |
+| **This workspace** | Show git-ignored files | Reveal everything `.gitignore` hides. An escape hatch, not an everyday setting. |
+| **This workspace** | Pinned paths           | Files and directories kept visible and grouped at the top of the tree.          |
+| **This workspace** | Extra ignore globs     | Gitignore syntax; hidden from the tree, the file jump, and the activity feed.   |
+| **All workspaces** | Show agent context     | Surface `AGENTS.md`, `CLAUDE.md` and friends even when git ignores them.        |
+| **All workspaces** | Agent session folders  | Where to look for coding-agent sessions. Detected automatically; add your own.  |
+
+Panel widths and collapse state are view state, not configuration — they're
+remembered automatically and stay out of the settings dialog.
+
 ## Roadmap
 
-| Phase | Description                                                                        | Status      |
-| ----- | ---------------------------------------------------------------------------------- | ----------- |
-| 0     | Scaffolding — app skeleton, CI on Windows + Ubuntu, release pipeline               | Done        |
-| 1     | Local observer MVP — file tree, gitignore-aware watcher, activity feed, git status | In progress |
-| 2     | Agent integration — agent transcript tailing, file-event ↔ tool-call correlation   | Planned     |
-| 3     | Git actions + polish — stage/commit/branch/stash, diff view, command palette       | Planned     |
-| 4     | Remote — headless daemon for WSL-from-Windows and SSH                              | Planned     |
+| Phase | Description                                                                        | Status           |
+| ----- | ---------------------------------------------------------------------------------- | ---------------- |
+| 0     | Scaffolding — app skeleton, CI on Windows + Ubuntu, release pipeline               | Done             |
+| 1     | Local observer MVP — file tree, gitignore-aware watcher, activity feed, git status | Feature-complete |
+| 2     | Agent integration — agent transcript tailing, file-event ↔ tool-call correlation   | In progress      |
+| 3     | Git actions + polish — stage/commit/branch/stash, diff view, command palette       | Planned          |
+| 4     | Remote — headless daemon for WSL-from-Windows and SSH                              | Planned          |
+
+`v0.1.0` is tagged once phase 1 passes acceptance testing on both Windows and
+Ubuntu against a large repository — that run is still outstanding, which is
+why releases are still `0.0.x`.
 
 ## Install
 
 Download the installer for your platform from
 [Releases](https://github.com/harrison-wallace/AgentLens/releases). Pre-1.0
 Windows installers are unsigned, so SmartScreen will warn before you can run
-them — this is expected until code signing lands (see the phase plans).
+them — this is expected until code signing lands.
 
 ## Build from source
 
@@ -70,10 +111,30 @@ npm run tauri dev    # run locally
 npm run tauri build  # produce an installer
 ```
 
+## Architecture
+
+A Tauri v2 desktop app: a Rust backend doing the filesystem and git work, a
+React front end rendering it.
+
+| Layer        | What it does                                                                   |
+| ------------ | ------------------------------------------------------------------------------ |
+| `src-tauri/` | Filesystem watcher, git status, previews, session snapshots, agent transcripts |
+| `src/`       | React UI — tree, activity feed, preview pane, settings                         |
+
+Everything crossing that boundary is a serializable message defined in
+`src-tauri/src/protocol.rs` and mirrored in `src/lib/protocol.ts`. That
+discipline is deliberate: phase 4 replaces the in-process backend with a
+headless daemon running where the files are (WSL, SSH), and only serializable
+messages survive that move.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup, required checks, and
 the PR flow.
+
+CI runs `cargo fmt --check`, `cargo clippy -D warnings`, `npm run lint`,
+`npm run typecheck`, and the full test suite on both Windows and Ubuntu
+before it will build.
 
 ## License
 

@@ -1,3 +1,4 @@
+mod agents;
 mod gitstatus;
 mod paths;
 mod preview;
@@ -9,9 +10,11 @@ mod visibility;
 mod watcher;
 mod workspace;
 
+use agents::{AgentProvider, AgentState};
 use protocol::{
-    AppSettings, CommandResult, DirEntryNode, GitStatusSnapshot, PinnedEntry, PreviewPayload,
-    SessionDiff, WatcherStatus, WorkspaceInfo, WorkspaceSettings,
+    AgentPoll, AgentRootInfo, AppSettings, CommandResult, DirEntryNode, GitStatusSnapshot,
+    PinnedEntry, PreviewPayload, SessionDiff, SessionRef, WatcherStatus, WorkspaceInfo,
+    WorkspaceSettings,
 };
 use settings::SettingsState;
 use snapshots::SessionState;
@@ -66,6 +69,7 @@ fn open_workspace(
     watcher_state: State<WatcherManager>,
     settings_state: State<SettingsState>,
     session_state: State<SessionState>,
+    agent_state: State<AgentState>,
     app: AppHandle,
 ) -> CommandResult<WorkspaceInfo> {
     let opened = workspace::open(&state, &PathBuf::from(path))?;
@@ -80,6 +84,8 @@ fn open_workspace(
     let loaded = settings::load(&app, &opened.root);
     settings::activate(&settings_state, &opened.root, loaded)?;
     snapshots::restart(&session_state, &opened.root)?;
+    // Read offsets and parse tallies belong to the workspace, not the app.
+    agents::reset(&agent_state)?;
     restart_watcher(&app, &watcher_state, &settings_state, &opened.root)?;
     Ok(to_workspace_info(&opened))
 }
@@ -90,11 +96,13 @@ fn close_workspace(
     watcher_state: State<WatcherManager>,
     settings_state: State<SettingsState>,
     session_state: State<SessionState>,
+    agent_state: State<AgentState>,
     app: AppHandle,
 ) -> CommandResult<()> {
     watcher::stop(&app, &watcher_state);
     snapshots::clear(&session_state)?;
     settings::deactivate(&settings_state)?;
+    agents::reset(&agent_state)?;
     workspace::close(&state)
 }
 
@@ -236,6 +244,51 @@ fn pinned_entries(
     ))
 }
 
+/// Agent sessions found for the open workspace, most recently active first.
+/// An empty list is the normal answer when no agent is running — never an
+/// error, since most workspaces have no session at all.
+#[tauri::command]
+fn agent_sessions(
+    state: State<WorkspaceState>,
+    settings_state: State<SettingsState>,
+) -> CommandResult<Vec<SessionRef>> {
+    let ws = workspace::current(&state)?;
+    let roots = agents::resolve_roots(&settings::current_app(&settings_state)?.agent_roots);
+    Ok(agents::claude::ClaudeCode::new().discover(&ws.root, &roots))
+}
+
+/// Where the app is looking for agent sessions, and where each entry came
+/// from. Surfaced in settings so "no agent detected" is diagnosable instead of
+/// a dead end — and so a typo'd path the user added is visibly unrecognised.
+#[tauri::command]
+fn agent_roots(settings_state: State<SettingsState>) -> CommandResult<Vec<AgentRootInfo>> {
+    Ok(agents::describe_roots(
+        &settings::current_app(&settings_state)?.agent_roots,
+    ))
+}
+
+/// Records appended to `session` since the last call. The provider keeps its
+/// own read offset in `AgentState`, so this returns only what is new — and
+/// nothing at all the first time, since a workspace opened mid-task must not
+/// replay history into the feed.
+#[tauri::command]
+fn agent_events(
+    session: SessionRef,
+    state: State<WorkspaceState>,
+    settings_state: State<SettingsState>,
+    agent_state: State<AgentState>,
+) -> CommandResult<AgentPoll> {
+    let ws = workspace::current(&state)?;
+    let roots = agents::resolve_roots(&settings::current_app(&settings_state)?.agent_roots);
+    let mut provider = agent_state.0.lock().map_err(|_| "agent state poisoned")?;
+    let events = provider.poll(&ws.root, &session, &roots);
+    Ok(AgentPoll {
+        events,
+        records: provider.stats.records,
+        skipped: provider.stats.skipped,
+    })
+}
+
 #[tauri::command]
 fn recent_workspaces(app: AppHandle) -> CommandResult<Vec<String>> {
     workspace::recent_workspaces(&app)
@@ -251,6 +304,7 @@ pub fn run() {
         .manage(WatcherManager::default())
         .manage(SettingsState::default())
         .manage(SessionState::default())
+        .manage(AgentState::default())
         .invoke_handler(tauri::generate_handler![
             get_app_info,
             open_workspace,
@@ -268,6 +322,9 @@ pub fn run() {
             app_settings,
             set_app_settings,
             pinned_entries,
+            agent_sessions,
+            agent_events,
+            agent_roots,
             recent_workspaces,
             watcher_status,
         ])

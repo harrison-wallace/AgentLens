@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AgentPoll,
+  AgentRootInfo,
   AppInfo,
   AppSettings,
   DirEntryNode,
@@ -7,6 +9,7 @@ import type {
   PinnedEntry,
   PreviewPayload,
   SessionDiff,
+  SessionRef,
   WatcherStatus,
   WorkspaceInfo,
   WorkspaceSettings,
@@ -87,4 +90,19 @@ export function setAppSettings(value: AppSettings): Promise<AppSettings> {
 /** The pinned paths resolved against the disk, for the tree's Pinned group. */
 export function pinnedEntries(): Promise<PinnedEntry[]> {
   return invoke<PinnedEntry[]>("pinned_entries");
+}
+
+/** Agent sessions for the open workspace, most recently active first. */
+export function agentSessions(): Promise<SessionRef[]> {
+  return invoke<SessionRef[]>("agent_sessions");
+}
+
+/** Where the app looks for agent sessions, and where each entry came from. */
+export function agentRoots(): Promise<AgentRootInfo[]> {
+  return invoke<AgentRootInfo[]>("agent_roots");
+}
+
+/** Records appended to `session` since the last call — new activity only. */
+export function agentEvents(session: SessionRef): Promise<AgentPoll> {
+  return invoke<AgentPoll>("agent_events", { session });
 }

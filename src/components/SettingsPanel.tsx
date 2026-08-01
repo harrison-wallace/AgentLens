@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useSettingsStore } from "../stores/settingsStore";
+import type { AgentKind } from "../lib/protocol";
 
 /** Turn a textarea's free text into the list the backend stores. */
 function toLines(text: string): string[] {
@@ -94,6 +95,7 @@ export default function SettingsPanel() {
             disabled={saving}
             onChange={() => void toggleShowAgentContext()}
           />
+          <AgentRoots />
         </Section>
 
         {error && (
@@ -102,6 +104,64 @@ export default function SettingsPanel() {
           </p>
         )}
       </div>
+    </div>
+  );
+}
+
+const AGENT_LABEL: Record<AgentKind, string> = {
+  claudeCode: "Claude Code",
+  opencode: "opencode",
+};
+
+/**
+ * Where agent sessions are looked for, and the escape hatch for adding more.
+ *
+ * The read-only list above the field is the point of this row. Detection is a
+ * guess — an agent's storage layout is a convention its authors never
+ * promised — so when no sessions show up, the only useful question is "what is
+ * it actually looking at". Without this, "no agent detected" is a dead end.
+ */
+function AgentRoots() {
+  const roots = useSettingsStore((s) => s.roots);
+  const configured = useSettingsStore((s) => s.app.agentRoots);
+  const setAgentRoots = useSettingsStore((s) => s.setAgentRoots);
+
+  return (
+    <div>
+      <p className="text-xs font-medium text-text">Agent session folders</p>
+      <p className="text-xs text-text-muted">
+        Searched for coding-agent sessions. Detected automatically; add your own if a profile lives
+        somewhere unusual.
+      </p>
+
+      <ul className="mt-1.5 space-y-0.5 rounded border border-border bg-bg p-2">
+        {roots.length === 0 && <li className="font-mono text-xs text-text-muted">None found</li>}
+        {roots.map((root) => (
+          <li key={root.path} className="flex items-baseline gap-2 font-mono text-xs">
+            <span className="min-w-0 flex-1 truncate text-text" title={root.path}>
+              {root.path}
+            </span>
+            {root.agent ? (
+              <span className="shrink-0 text-text-muted">{AGENT_LABEL[root.agent]}</span>
+            ) : (
+              // A path the user typed that nothing recognises is exactly why
+              // they'd see no sessions, so it says so instead of vanishing.
+              <span className="shrink-0 text-danger" title="No agent recognises this folder">
+                not recognised
+              </span>
+            )}
+            {!root.detected && <span className="shrink-0 text-text-muted">added</span>}
+          </li>
+        ))}
+      </ul>
+
+      <TextRows
+        id="agent-roots"
+        placeholder={"/opt/claude-profiles/work"}
+        rows={2}
+        value={configured}
+        onCommit={(lines) => void setAgentRoots(lines)}
+      />
     </div>
   );
 }
@@ -158,12 +218,14 @@ function TextRows({
   description,
   placeholder,
   value,
+  rows = 4,
   onCommit,
 }: {
   id: string;
-  label: string;
-  description: string;
+  label?: string;
+  description?: string;
   placeholder: string;
+  rows?: number;
   value: string[];
   onCommit: (lines: string[]) => void;
 }) {
@@ -183,10 +245,12 @@ function TextRows({
 
   return (
     <div>
-      <label className="block text-xs font-medium text-text" htmlFor={id}>
-        {label}
-      </label>
-      <p className="text-xs text-text-muted">{description}</p>
+      {label && (
+        <label className="block text-xs font-medium text-text" htmlFor={id}>
+          {label}
+        </label>
+      )}
+      {description && <p className="text-xs text-text-muted">{description}</p>}
       <textarea
         id={id}
         ref={ref}
@@ -196,7 +260,7 @@ function TextRows({
           const lines = toLines(text);
           if (lines.join("\n") !== stored) onCommit(lines);
         }}
-        rows={4}
+        rows={rows}
         spellCheck={false}
         placeholder={placeholder}
         className="mt-1.5 w-full resize-y rounded border border-border bg-bg p-2 font-mono text-xs text-text outline-none placeholder:text-text-muted focus:border-glow"

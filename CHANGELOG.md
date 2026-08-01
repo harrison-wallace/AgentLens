@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.7] - 2026-08-01
+
+### Added
+
+- Agent session discovery and tailing for Claude Code — the groundwork for
+  attributing file changes to the tool call that made them. Sessions are found
+  by mapping the workspace to its transcript directory and confirming the
+  `cwd` recorded inside, then read incrementally from a byte offset, tolerant
+  of partial lines, unknown record types and malformed JSON. Nothing is shown
+  in the UI yet; correlation and the session panel come next.
+- Multiple agent profiles are supported. A profile is a separate config
+  directory with its own login and history, and a machine commonly has
+  several. Reading `CLAUDE_CONFIG_DIR` alone would not have worked: launched
+  from a desktop icon the app inherits no such variable and would only ever
+  have seen the default profile — never the one the work is actually in.
+- An **Agent session folders** setting, listing every directory being searched
+  with the agent that recognises it, and adding your own for a layout the app
+  can't guess. Detection is necessarily a guess — agents don't promise where
+  they store sessions, and profile naming is a habit rather than a standard —
+  so the list makes "no agent detected" diagnosable, and a mistyped path shows
+  as "not recognised" instead of silently doing nothing.
+
+### Changed
+
+- README rewritten: CI, release, version, licence and stack badges; a
+  configuration reference for all five settings; an architecture section
+  covering the Rust/React protocol boundary; and a corrected roadmap — phase 1
+  has been feature-complete for several releases while still reading "in
+  progress".
+
 ## [0.0.6] - 2026-08-01
 
 ### Added

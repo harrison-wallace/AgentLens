@@ -122,7 +122,10 @@ mod tests {
                 pinned: pinned.iter().map(|p| p.to_string()).collect(),
                 ..Default::default()
             },
-            &AppSettings { show_agent_context },
+            &AppSettings {
+                show_agent_context,
+                ..Default::default()
+            },
         )
     }
 

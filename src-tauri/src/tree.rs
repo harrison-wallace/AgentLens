@@ -272,6 +272,7 @@ mod tests {
             },
             &AppSettings {
                 show_agent_context: false,
+                ..Default::default()
             },
         )
     }

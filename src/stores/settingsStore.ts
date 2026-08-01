@@ -1,12 +1,13 @@
 import { create } from "zustand";
 import {
+  agentRoots,
   appSettings,
   pinnedEntries,
   setAppSettings,
   setWorkspaceSettings,
   workspaceSettings,
 } from "../lib/tauri";
-import type { AppSettings, PinnedEntry, WorkspaceSettings } from "../lib/protocol";
+import type { AgentRootInfo, AppSettings, PinnedEntry, WorkspaceSettings } from "../lib/protocol";
 import { useTreeStore } from "./treeStore";
 
 function toErrorMessage(err: unknown): string {
@@ -15,7 +16,7 @@ function toErrorMessage(err: unknown): string {
 
 const EMPTY: WorkspaceSettings = { extraIgnores: [], showIgnored: false, pinned: [] };
 /** Only used before the first read lands; the backend owns the real default. */
-const EMPTY_APP: AppSettings = { showAgentContext: true };
+const EMPTY_APP: AppSettings = { showAgentContext: true, agentRoots: [] };
 
 interface SettingsStore {
   /** Scoped to the open workspace. */
@@ -24,6 +25,8 @@ interface SettingsStore {
   app: AppSettings;
   /** The pinned paths resolved against the disk, for the tree's Pinned group. */
   pins: PinnedEntry[];
+  /** Directories being searched for agent sessions, for the settings panel. */
+  roots: AgentRootInfo[];
   open: boolean;
   saving: boolean;
   error: string | null;
@@ -31,12 +34,15 @@ interface SettingsStore {
   refresh: () => Promise<void>;
   refreshApp: () => Promise<void>;
   refreshPins: () => Promise<void>;
+  refreshRoots: () => Promise<void>;
   /** Persists the globs and returns true if the save succeeded. */
   save: (extraIgnores: string[]) => Promise<boolean>;
   /** Flips git-ignored visibility and persists it. */
   toggleShowIgnored: () => Promise<boolean>;
   /** Flips whether `AGENTS.md` and friends are surfaced, for every workspace. */
   toggleShowAgentContext: () => Promise<boolean>;
+  /** Replaces the extra directories searched for agent sessions. */
+  setAgentRoots: (roots: string[]) => Promise<boolean>;
   /** Pins `path` if it isn't already, unpins it if it is. */
   togglePin: (path: string) => Promise<boolean>;
   isPinned: (path: string) => boolean;
@@ -94,6 +100,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   settings: EMPTY,
   app: EMPTY_APP,
   pins: [],
+  roots: [],
   open: false,
   saving: false,
   error: null,
@@ -116,6 +123,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     } catch {
       set({ app: EMPTY_APP });
     }
+    await get().refreshRoots();
   },
 
   refreshPins: async () => {
@@ -123,6 +131,14 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       set({ pins: await pinnedEntries() });
     } catch {
       set({ pins: [] });
+    }
+  },
+
+  refreshRoots: async () => {
+    try {
+      set({ roots: await agentRoots() });
+    } catch {
+      set({ roots: [] });
     }
   },
 
@@ -141,7 +157,15 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   toggleShowAgentContext: async () =>
     persist(set, async () => ({
-      app: await setAppSettings({ showAgentContext: !get().app.showAgentContext }),
+      app: await setAppSettings({
+        ...get().app,
+        showAgentContext: !get().app.showAgentContext,
+      }),
+    })),
+
+  setAgentRoots: async (roots) =>
+    persist(set, async () => ({
+      app: await setAppSettings({ ...get().app, agentRoots: roots }),
     })),
 
   isPinned: (path) => get().settings.pinned.includes(path),

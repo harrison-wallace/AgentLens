@@ -8,7 +8,7 @@ import type { AppSettings, WorkspaceSettings } from "../lib/protocol";
  */
 const backend = {
   workspace: { extraIgnores: [], showIgnored: false, pinned: [] } as WorkspaceSettings,
-  app: { showAgentContext: true } as AppSettings,
+  app: { showAgentContext: true, agentRoots: [] } as AppSettings,
 };
 
 vi.mock("../lib/tauri", () => ({
@@ -22,6 +22,7 @@ vi.mock("../lib/tauri", () => ({
     backend.app = value;
     return value;
   }),
+  agentRoots: vi.fn(async () => []),
   pinnedEntries: vi.fn(async () =>
     backend.workspace.pinned.map((path) => ({
       path,
@@ -42,10 +43,10 @@ const { useSettingsStore } = await import("./settingsStore");
 describe("settingsStore", () => {
   beforeEach(() => {
     backend.workspace = { extraIgnores: [], showIgnored: false, pinned: [] };
-    backend.app = { showAgentContext: true };
+    backend.app = { showAgentContext: true, agentRoots: [] };
     useSettingsStore.setState({
       settings: { extraIgnores: [], showIgnored: false, pinned: [] },
-      app: { showAgentContext: true },
+      app: { showAgentContext: true, agentRoots: [] },
       pins: [],
       error: null,
       saving: false,
@@ -73,7 +74,7 @@ describe("settingsStore", () => {
     await useSettingsStore.getState().togglePin("notes.md");
     await useSettingsStore.getState().toggleShowAgentContext();
 
-    expect(backend.app).toEqual({ showAgentContext: false });
+    expect(backend.app).toEqual({ showAgentContext: false, agentRoots: [] });
     // The workspace write must not have carried the app setting with it.
     expect(backend.workspace.pinned).toEqual(["notes.md"]);
     expect(useSettingsStore.getState().app.showAgentContext).toBe(false);
