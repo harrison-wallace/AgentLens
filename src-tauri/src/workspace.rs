@@ -61,6 +61,16 @@ pub fn open(state: &WorkspaceState, path: &Path) -> Result<Workspace, String> {
     Ok(workspace)
 }
 
+/// Reset the session clock to now, keeping the same workspace open. Paired
+/// with re-capturing snapshot baselines, this is the "clear" action: it
+/// redefines what "changed since the session started" means.
+pub fn restart_session(state: &WorkspaceState) -> Result<Workspace, String> {
+    let mut guard = state.0.lock().map_err(|_| "workspace state poisoned")?;
+    let workspace = guard.as_mut().ok_or("no workspace is open")?;
+    workspace.watching_since = now_millis();
+    Ok(workspace.clone())
+}
+
 /// Close the currently open workspace, if any.
 pub fn close(state: &WorkspaceState) -> Result<(), String> {
     let mut guard = state.0.lock().map_err(|_| "workspace state poisoned")?;

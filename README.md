@@ -5,9 +5,22 @@ read-only window into what your terminal coding agent (Claude Code, opencode,
 …) is doing to a directory: live file tree, change feed, git status,
 read-only previews. Runs on Windows and Ubuntu.
 
-**Status:** v0.0.2 — pre-alpha. Open a folder and browse its file tree with git
-status decorations. The filesystem watcher, activity feed, and previews are
-still to come, so the view only updates when you hit Refresh.
+**Status:** v0.0.3 — pre-alpha, with the local-observer feature set now in
+place and awaiting acceptance testing on both platforms.
+
+What works today:
+
+- **Live file tree** — virtualized, lazy, gitignore-aware, with git status
+  badges and a fading highlight on whatever just changed.
+- **Activity feed** — filesystem changes grouped per debounced burst, newest
+  first; click a row to reveal it in the tree. An `npm install` produces no
+  feed spam.
+- **Read-only preview** — syntax-highlighted code, images, rendered markdown,
+  with a size guard and an "open externally" escape hatch.
+- **Diff since session** — what changed in a file since you started watching,
+  not merely since the last commit.
+- **`Ctrl+P` file jump**, arrow-key tree navigation, resizable and
+  collapsible panels, and per-workspace extra ignore globs.
 
 <!-- TODO: screenshot once Phase 1 (local observer) lands -->
 

@@ -1,6 +1,12 @@
 import { create } from "zustand";
 import { open } from "@tauri-apps/plugin-dialog";
-import { closeWorkspace, currentWorkspace, openWorkspace, recentWorkspaces } from "../lib/tauri";
+import {
+  closeWorkspace,
+  currentWorkspace,
+  openWorkspace,
+  recentWorkspaces,
+  restartSession,
+} from "../lib/tauri";
 import type { WorkspaceInfo } from "../lib/protocol";
 
 interface WorkspaceStore {
@@ -10,6 +16,8 @@ interface WorkspaceStore {
   open: (path: string) => Promise<void>;
   openViaDialog: () => Promise<void>;
   close: () => Promise<void>;
+  /** Resets "since when" for highlights and diffs, keeping the workspace. */
+  restartSession: () => Promise<void>;
   restore: () => Promise<void>;
   loadRecent: () => Promise<void>;
 }
@@ -48,6 +56,15 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     try {
       await closeWorkspace();
       set({ workspace: null, error: null });
+    } catch (err) {
+      set({ error: toErrorMessage(err) });
+    }
+  },
+
+  restartSession: async () => {
+    try {
+      const workspace = await restartSession();
+      set({ workspace, error: null });
     } catch (err) {
       set({ error: toErrorMessage(err) });
     }

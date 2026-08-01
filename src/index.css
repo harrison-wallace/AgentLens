@@ -13,6 +13,7 @@
   --color-hover: #1a1f26;
   --color-selected: #1e2a3d;
   --color-danger: #f87171;
+  --color-glow: #5b9dff;
 
   /* git status badges */
   --color-git-added: #4ade80;
@@ -21,6 +22,16 @@
   --color-git-renamed: #60a5fa;
   --color-git-untracked: #a78bfa;
   --color-git-conflicted: #fb923c;
+
+  /* diff row backgrounds — tinted enough to scan, dim enough to read over */
+  --color-diff-added: #12301d;
+  --color-diff-removed: #351619;
+}
+
+/* Panels own their own scrolling, so the window itself never scrolls. */
+html,
+body {
+  overflow: hidden;
 }
 
 html,
@@ -32,4 +43,125 @@ body,
 body {
   background-color: var(--color-surface);
   color: var(--color-text);
+}
+
+/* Tree-row "recently changed" glow: a quick highlight that settles into a
+   subtle tint until the row is pruned from `recentlyChanged` (~60s). */
+@keyframes tree-row-glow-fade {
+  from {
+    background-color: color-mix(in srgb, var(--color-glow) 35%, transparent);
+  }
+  to {
+    background-color: color-mix(in srgb, var(--color-glow) 8%, transparent);
+  }
+}
+
+/* An inset shadow rather than a border: a border would widen the row box and
+   shift its content sideways as the glow comes and goes. */
+.tree-row-glow {
+  box-shadow: inset 2px 0 0 var(--color-glow);
+  animation: tree-row-glow-fade 3s ease-out forwards;
+}
+
+/* Shiki emits its own inline theme colours; only the box is ours. Wrapping is
+   off so long lines scroll rather than reflow and break the column feel. */
+.shiki-body pre {
+  margin: 0;
+  padding: 0.5rem;
+  overflow-x: auto;
+  background-color: transparent !important;
+  line-height: 1.55;
+}
+
+/* Rendered markdown. Tailwind's preflight strips heading and list styling, so
+   the few elements a README actually uses are restored here rather than
+   pulling in a typography plugin. */
+.markdown-body {
+  color: var(--color-text);
+  line-height: 1.65;
+}
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4 {
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 1.2em 0 0.5em;
+}
+.markdown-body h1 {
+  font-size: 1.5em;
+}
+.markdown-body h2 {
+  font-size: 1.25em;
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: 0.2em;
+}
+.markdown-body h3 {
+  font-size: 1.1em;
+}
+.markdown-body p,
+.markdown-body ul,
+.markdown-body ol,
+.markdown-body blockquote,
+.markdown-body table {
+  margin: 0.7em 0;
+}
+.markdown-body ul,
+.markdown-body ol {
+  padding-left: 1.4em;
+}
+.markdown-body ul {
+  list-style: disc;
+}
+.markdown-body ol {
+  list-style: decimal;
+}
+.markdown-body a {
+  color: var(--color-accent);
+  text-decoration: underline;
+}
+.markdown-body code {
+  font-family: ui-monospace, monospace;
+  font-size: 0.9em;
+  background-color: var(--color-hover);
+  border-radius: 3px;
+  padding: 0.1em 0.3em;
+}
+.markdown-body pre {
+  background-color: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 0.75em;
+  overflow-x: auto;
+}
+.markdown-body pre code {
+  background-color: transparent;
+  padding: 0;
+}
+.markdown-body blockquote {
+  border-left: 3px solid var(--color-border);
+  padding-left: 0.8em;
+  color: var(--color-text-muted);
+}
+.markdown-body hr {
+  border: 0;
+  border-top: 1px solid var(--color-border);
+  margin: 1.2em 0;
+}
+.markdown-body table {
+  border-collapse: collapse;
+  display: block;
+  overflow-x: auto;
+}
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid var(--color-border);
+  padding: 0.35em 0.6em;
+}
+.markdown-body th {
+  background-color: var(--color-surface-raised);
+  font-weight: 600;
+}
+.markdown-body img {
+  max-width: 100%;
 }

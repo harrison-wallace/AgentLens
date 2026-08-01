@@ -72,6 +72,25 @@ pub fn resolve_in_workspace(root: &Path, relative: &str) -> Result<PathBuf, Stri
     Ok(resolved)
 }
 
+/// Like `resolve_in_workspace`, but for paths whose *contents* are about to
+/// be read or handed to the OS. The component checks alone can't see through
+/// a symlink: `workspace/link` is a legitimate relative path even when it
+/// points at `/etc/shadow`. Resolving the real path and re-checking it
+/// against the root closes that, at the cost of requiring the file to exist.
+///
+/// `root` must already be canonical — `workspace::open` guarantees it — or
+/// the prefix comparison is meaningless.
+pub fn resolve_existing_in_workspace(root: &Path, relative: &str) -> Result<PathBuf, String> {
+    let joined = resolve_in_workspace(root, relative)?;
+    let canonical = joined
+        .canonicalize()
+        .map_err(|e| format!("failed to resolve path: {e}"))?;
+    if !canonical.starts_with(root) {
+        return Err(format!("path escapes workspace: {relative}"));
+    }
+    Ok(canonical)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,6 +201,43 @@ mod tests {
     fn resolve_in_workspace_rejects_windows_drive_prefix() {
         let root = Path::new("/home/user/project");
         assert!(resolve_in_workspace(root, "C:\\secret").is_err());
+    }
+
+    #[test]
+    fn resolve_existing_rejects_a_symlink_escaping_the_workspace() {
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("secret.txt");
+        std::fs::write(&secret, "classified").unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&secret, root.join("link.txt")).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&secret, root.join("link.txt")).unwrap();
+
+        // The component checks pass — it's an ordinary relative path.
+        assert!(resolve_in_workspace(&root, "link.txt").is_ok());
+        // Following it does not.
+        assert!(resolve_existing_in_workspace(&root, "link.txt").is_err());
+    }
+
+    #[test]
+    fn resolve_existing_accepts_a_real_file_inside_the_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn main() {}").unwrap();
+
+        let resolved = resolve_existing_in_workspace(&root, "src/main.rs").unwrap();
+        assert!(resolved.starts_with(&root));
+    }
+
+    #[test]
+    fn resolve_existing_errors_on_a_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        assert!(resolve_existing_in_workspace(&root, "nope.txt").is_err());
     }
 
     #[test]

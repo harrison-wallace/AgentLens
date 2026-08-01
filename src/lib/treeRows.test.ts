@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { countsFor, flattenTree, gitBadgeFor } from "./treeRows";
+import { countsFor, flattenTree, gitBadgeFor, parentDirsOf } from "./treeRows";
 import type { DirEntryNode, GitFileStatus, GitStatusKind } from "./protocol";
 
 function entry(name: string, path: string, isDir: boolean): DirEntryNode {
@@ -114,5 +114,24 @@ describe("countsFor", () => {
 
   it("returns all zeros for an empty file list", () => {
     expect(countsFor([])).toEqual({ modified: 0, added: 0, deleted: 0, untracked: 0 });
+  });
+});
+
+describe("parentDirsOf", () => {
+  it("maps a root-level file to the empty-string root", () => {
+    expect(parentDirsOf(["README.md"])).toEqual([""]);
+  });
+
+  it("returns the containing directory for a nested path", () => {
+    expect(parentDirsOf(["src/main.ts"])).toEqual(["src"]);
+  });
+
+  it("dedupes and preserves first-seen order across mixed paths", () => {
+    const dirs = parentDirsOf(["b.txt", "src/main.ts", "src/lib/x.ts", "a.txt", "src/main2.ts"]);
+    expect(dirs).toEqual(["", "src", "src/lib"]);
+  });
+
+  it("returns an empty array for an empty input", () => {
+    expect(parentDirsOf([])).toEqual([]);
   });
 });

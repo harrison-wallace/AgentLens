@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.3] - 2026-08-01
+
+Completes the local-observer feature set. Acceptance testing on Windows and
+Ubuntu against a large repository is still outstanding, which is why this is a
+patch release and not `0.1.0`.
+
+### Added
+
+- Filesystem watcher (`notify` + 300 ms debounce) feeding an activity feed:
+  changes arrive as one batch per burst, newest first, grouped under a
+  relative-time header, with click-to-reveal in the tree. Ignored churn such
+  as `npm install` produces no feed entries at all.
+- Read-only preview pane — syntax-highlighted code (Shiki, grammars loaded on
+  demand), images, and rendered markdown, with a 2 MB size guard, a binary
+  guard, and an "open externally" hand-off to the OS.
+- "Diff since session" tab showing what changed in a file since watching
+  started, rather than since the last commit. Files already dirty when the
+  session began are baselined against their content at that moment, so
+  pre-existing work isn't misattributed to the agent.
+- `Ctrl+P` fuzzy file jump over a gitignore-aware index, and arrow-key
+  navigation in the tree (expand, collapse, step to parent, preview).
+- Per-workspace extra ignore globs, persisted and applied consistently to the
+  tree, the file index, and the feed.
+- Resizable, collapsible tree/preview/feed panels with persisted widths, and a
+  "Clear" action that re-baselines the session.
+- Tree rows glow briefly when a file changes, and the status bar reports live
+  watcher state.
+
+### Changed
+
+- The watcher registers a non-recursive watch per directory instead of one
+  recursive watch on the root. A recursive watch registers an OS watch for
+  every descendant including `node_modules`, which can exhaust the inotify
+  limit on a large repository and take the whole watcher down.
+- Watch registration happens on a background thread. Measured cold on a
+  100k-file tree the walk takes ~2.6 s, far too long to hold up opening a
+  workspace, so only the root is watched before the window is usable.
+- `.gitignore` is now honoured in directories that aren't git repositories,
+  where the tree previously ignored it while the watcher did not.
+
+### Fixed
+
+- Staging or committing left the git badges and status-bar counts stale:
+  those operations touch only `.git`, which is filtered from the feed, so
+  nothing triggered a re-read.
+- A filesystem event reported against the workspace root produced a blank row
+  in the activity feed.
+- A batch queued just before a workspace switch could be emitted against the
+  workspace that replaced it, including overwriting its git status.
+- Previewing a file resolved symlinks only after the containment check, so a
+  link planted inside the workspace could read a file outside it.
+- Reveal-in-tree and the file jump highlighted the target row without
+  scrolling to it, so nothing visibly happened when it was off-screen.
+- Large diffs and large files are capped before rendering; a rewritten file or
+  a sizeable `package-lock.json` previously froze the preview pane.
+- The file tree rebuilt its entire row list on every scroll frame.
+
 ## [0.0.2] - 2026-07-31
 
 ### Added

@@ -1,10 +1,22 @@
 import { useEffect } from "react";
+import ActivityFeed from "./components/ActivityFeed";
+import CommandPalette from "./components/CommandPalette";
 import EmptyState from "./components/EmptyState";
 import FileTree from "./components/FileTree";
+import Preview from "./components/Preview";
+import SettingsPanel from "./components/SettingsPanel";
+import Splitter from "./components/Splitter";
 import StatusBar from "./components/StatusBar";
 import WorkspaceHeader from "./components/WorkspaceHeader";
+import { onFsChanges, onGitStatus, onWatcherStatus } from "./lib/events";
+import { useFeedStore } from "./stores/feedStore";
 import { useGitStore } from "./stores/gitStore";
+import { useLayoutStore } from "./stores/layoutStore";
+import { usePaletteStore } from "./stores/paletteStore";
+import { usePreviewStore } from "./stores/previewStore";
+import { useSettingsStore } from "./stores/settingsStore";
 import { useTreeStore } from "./stores/treeStore";
+import { useWatcherStore } from "./stores/watcherStore";
 import { useWorkspaceStore } from "./stores/workspaceStore";
 
 export default function App() {
@@ -12,45 +24,142 @@ export default function App() {
   const restore = useWorkspaceStore((s) => s.restore);
   const loadRecent = useWorkspaceStore((s) => s.loadRecent);
   const selected = useTreeStore((s) => s.selected);
+  const selectedIsDir = useTreeStore((s) => s.selectedIsDir);
+  const treeWidth = useLayoutStore((s) => s.treeWidth);
+  const feedWidth = useLayoutStore((s) => s.feedWidth);
+  const treeCollapsed = useLayoutStore((s) => s.treeCollapsed);
+  const feedCollapsed = useLayoutStore((s) => s.feedCollapsed);
+  const previewCollapsed = useLayoutStore((s) => s.previewCollapsed);
+  const setTreeWidth = useLayoutStore((s) => s.setTreeWidth);
+  const setFeedWidth = useLayoutStore((s) => s.setFeedWidth);
 
   useEffect(() => {
     void restore();
     void loadRecent();
   }, [restore, loadRecent]);
 
-  // The watcher lands in a later slice, so a workspace change (open, restore
-  // on mount, or close) is the only trigger for a fresh tree + git read.
+  // Subscribed once for the app's lifetime (not per-workspace) so a
+  // workspace switch never leaves a stale listener behind.
+  useEffect(() => {
+    const fsChanges = onFsChanges((events) => {
+      useFeedStore.getState().addBatch(events);
+      useTreeStore.getState().applyFsChanges(events);
+
+      // The open file may be one of the ones that just changed; re-read it
+      // rather than leaving a stale preview on screen.
+      const open = usePreviewStore.getState().path;
+      if (open && events.some((event) => event.path === open)) {
+        void usePreviewStore.getState().refresh();
+      }
+    });
+    const gitStatus = onGitStatus((snapshot) => {
+      useGitStore.getState().applySnapshot(snapshot);
+    });
+    const watcherStatus = onWatcherStatus((status) => {
+      useWatcherStore.getState().set(status);
+    });
+
+    return () => {
+      void fsChanges.then((unlisten) => unlisten());
+      void gitStatus.then((unlisten) => unlisten());
+      void watcherStatus.then((unlisten) => unlisten());
+    };
+  }, []);
+
+  // `Ctrl+P` (`Cmd+P`) anywhere opens the file jump.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "p") return;
+      // Don't stack the palette on top of another modal, or re-open (and so
+      // reset) the one already showing.
+      if (useSettingsStore.getState().open || usePaletteStore.getState().open) return;
+      event.preventDefault();
+      void usePaletteStore.getState().show();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  // A workspace change (open, restore on mount, or close) is the trigger for
+  // a fresh tree, git read, feed, and watcher status — the watcher itself is
+  // started/stopped backend-side as part of open/close.
   useEffect(() => {
     useTreeStore.getState().reset();
     useGitStore.getState().reset();
+    useFeedStore.getState().clear();
+    useWatcherStore.getState().reset();
+    usePreviewStore.getState().reset();
+    usePaletteStore.getState().reset();
+    useSettingsStore.getState().reset();
     if (workspace) {
       void useTreeStore.getState().loadDir("");
       void useGitStore.getState().refresh();
+      void useWatcherStore.getState().refresh();
+      void useSettingsStore.getState().refresh();
     }
   }, [workspace]);
+
+  // Selecting a directory moves the tree cursor but has nothing to preview,
+  // so the pane keeps showing whatever file was open.
+  useEffect(() => {
+    if (selected && !selectedIsDir) {
+      void usePreviewStore.getState().load(selected);
+    }
+  }, [selected, selectedIsDir]);
 
   if (!workspace) {
     return <EmptyState />;
   }
 
+  // Exactly one panel absorbs the leftover width. The preview takes it when
+  // visible; otherwise it falls to the feed, then the tree — so hiding the
+  // middle panel widens what's left instead of leaving a gap.
+  const flexPanel = !previewCollapsed ? "preview" : !feedCollapsed ? "feed" : "tree";
+
   return (
     <div className="flex h-full min-h-0 flex-col bg-surface">
       <WorkspaceHeader />
       <div className="flex min-h-0 flex-1">
-        <div className="min-h-0 w-80 shrink-0 border-r border-border">
-          <FileTree />
-        </div>
-        <div className="flex min-h-0 flex-1 items-center justify-center p-4 text-center text-sm text-text-muted">
-          {selected ? (
-            <p>
-              <span className="text-text">{selected}</span> — preview lands in a later slice.
-            </p>
-          ) : (
-            <p>Select a file to preview it in a later slice.</p>
-          )}
-        </div>
+        {!treeCollapsed && (
+          <>
+            <div
+              className={`min-h-0 min-w-0 ${flexPanel === "tree" ? "flex-1" : "shrink-0"}`}
+              style={flexPanel === "tree" ? undefined : { width: treeWidth }}
+            >
+              <FileTree />
+            </div>
+            {flexPanel !== "tree" && (
+              <Splitter width={treeWidth} onResize={setTreeWidth} side="left" label="Resize tree" />
+            )}
+          </>
+        )}
+        {!previewCollapsed && (
+          <div className="min-h-0 min-w-0 flex-1">
+            <Preview />
+          </div>
+        )}
+        {!feedCollapsed && (
+          <>
+            {flexPanel !== "feed" && (
+              <Splitter
+                width={feedWidth}
+                onResize={setFeedWidth}
+                side="right"
+                label="Resize feed"
+              />
+            )}
+            <div
+              className={`min-h-0 min-w-0 ${flexPanel === "feed" ? "flex-1" : "shrink-0"}`}
+              style={flexPanel === "feed" ? undefined : { width: feedWidth }}
+            >
+              <ActivityFeed />
+            </div>
+          </>
+        )}
       </div>
       <StatusBar />
+      <CommandPalette />
+      <SettingsPanel />
     </div>
   );
 }

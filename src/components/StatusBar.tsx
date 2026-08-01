@@ -1,8 +1,24 @@
 import { useGitStore } from "../stores/gitStore";
+import { useWatcherStore } from "../stores/watcherStore";
 import { countsFor } from "../lib/treeRows";
+import type { WatcherState } from "../lib/protocol";
+
+// Exhaustive over `WatcherState` with no `default`, so adding a state is a
+// type error here rather than a silent "watcher: off".
+function watcherLabel(state: WatcherState, message: string | null): string {
+  switch (state) {
+    case "running":
+      return "watcher: on";
+    case "error":
+      return `watcher: error${message ? ` (${message})` : ""}`;
+    case "off":
+      return "watcher: off";
+  }
+}
 
 export default function StatusBar() {
   const status = useGitStore((s) => s.status);
+  const watcher = useWatcherStore((s) => s.status);
   const counts = countsFor(status?.files ?? []);
 
   let branchLabel = "—";
@@ -21,7 +37,12 @@ export default function StatusBar() {
           <span className="text-git-untracked">? {counts.untracked}</span>
         </span>
       )}
-      <span className="ml-auto shrink-0">watcher: off</span>
+      <span
+        className={`ml-auto shrink-0 truncate ${watcher.state === "error" ? "text-danger" : ""}`}
+        title={watcher.message ?? undefined}
+      >
+        {watcherLabel(watcher.state, watcher.message)}
+      </span>
     </footer>
   );
 }

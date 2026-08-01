@@ -64,6 +64,24 @@ export interface GitCounts {
   untracked: number;
 }
 
+/**
+ * Distinct parent directories of `paths`, in first-seen order. A root-level
+ * path (no `/`) maps to `""`, the workspace root.
+ */
+export function parentDirsOf(paths: string[]): string[] {
+  const seen = new Set<string>();
+  const dirs: string[] = [];
+  for (const path of paths) {
+    const slash = path.lastIndexOf("/");
+    const dir = slash === -1 ? "" : path.slice(0, slash);
+    if (!seen.has(dir)) {
+      seen.add(dir);
+      dirs.push(dir);
+    }
+  }
+  return dirs;
+}
+
 /** Counts for the status bar. Renamed/conflicted files aren't broken out. */
 export function countsFor(files: GitFileStatus[]): GitCounts {
   const counts: GitCounts = { modified: 0, added: 0, deleted: 0, untracked: 0 };
