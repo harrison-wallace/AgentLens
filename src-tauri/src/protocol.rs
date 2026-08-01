@@ -96,6 +96,29 @@ pub struct GitStatusSnapshot {
     pub files: Vec<GitFileStatus>,
 }
 
+/// Whether git mutations can be offered for the open workspace.
+///
+/// Checked when a workspace opens so the UI can degrade to read-only with a
+/// hint rather than showing buttons that fail the moment they're pressed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCapabilities {
+    pub can_mutate: bool,
+    /// `git --version` output, when it ran.
+    pub version: Option<String>,
+    /// Why mutations are unavailable, for the hint.
+    pub reason: Option<String>,
+}
+
+/// Local branches and which one is checked out.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchList {
+    /// `None` on a detached HEAD or an unborn branch.
+    pub current: Option<String>,
+    pub branches: Vec<String>,
+}
+
 /// Kind of filesystem change reported by the watcher.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

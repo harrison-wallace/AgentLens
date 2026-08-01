@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.8] - 2026-08-01
+
+### Added
+
+- **Git actions** — the first release that writes to your repository. Stage
+  and unstage individual files or everything, commit (with amend), switch and
+  create branches, stash and pop. A source-control panel under the tree shows
+  staged and unstaged work with per-file actions; a branch control in the
+  status bar handles the rest.
+- Mutations run through the `git` CLI rather than libgit2, so your hooks run,
+  your config is honoured, and the resulting commits are identical to ones
+  made in the terminal. Reads stay on libgit2, which is faster and needs none
+  of that.
+- Git's own error text is shown verbatim in a dismissible strip rather than
+  paraphrased into a dialog — a failed branch switch tells you exactly what
+  git told it.
+- Git actions are hidden with an explanation when `git` isn't on `PATH`,
+  instead of offering buttons that fail when pressed.
+
+### Fixed
+
+- A file that was staged and then edited again appeared only under unstaged
+  changes, so the commit box reported nothing to commit and disabled itself —
+  while `git commit` would have succeeded and committed the staged version.
+  Staged and unstaged work are now tracked as the two separate things git has
+  always considered them. This was the likeliest path to hit, since an agent
+  edits files it has already staged constantly.
+- The status bar counted a partially-staged file twice, overstating how much
+  had changed.
+
+### Changed
+
+- Git mutations are serialized. Two `git` processes writing one repository can
+  collide on the index lock, and a slow hook makes the overlap easy to hit.
+
 ## [0.0.7] - 2026-08-01
 
 ### Added

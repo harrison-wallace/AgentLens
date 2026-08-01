@@ -61,6 +61,26 @@ export interface GitStatusSnapshot {
   files: GitFileStatus[];
 }
 
+/**
+ * Whether git mutations can be offered for the open workspace. Checked on
+ * open so the UI degrades to read-only with a hint rather than showing
+ * buttons that fail when pressed.
+ */
+export interface GitCapabilities {
+  canMutate: boolean;
+  /** `git --version` output, when it ran. */
+  version: string | null;
+  /** Why mutations are unavailable, for the hint. */
+  reason: string | null;
+}
+
+/** Local branches and which one is checked out. */
+export interface BranchList {
+  /** `null` on a detached HEAD or an unborn branch. */
+  current: string | null;
+  branches: string[];
+}
+
 /** Kind of filesystem change reported by the watcher. */
 export type FsEventKind = "created" | "modified" | "deleted" | "renamed";
 

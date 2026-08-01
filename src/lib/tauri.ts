@@ -4,7 +4,9 @@ import type {
   AgentRootInfo,
   AppInfo,
   AppSettings,
+  BranchList,
   DirEntryNode,
+  GitCapabilities,
   GitStatusSnapshot,
   PinnedEntry,
   PreviewPayload,
@@ -37,6 +39,55 @@ export function listDir(path: string): Promise<DirEntryNode[]> {
 
 export function gitStatus(): Promise<GitStatusSnapshot> {
   return invoke<GitStatusSnapshot>("git_status");
+}
+
+/**
+ * Git mutations. Each returns the refreshed status, so a caller can update
+ * without a second round trip — the backend also broadcasts it, since a
+ * mutation the UI doesn't reflect immediately reads as a failure.
+ */
+export function gitCapabilities(): Promise<GitCapabilities> {
+  return invoke<GitCapabilities>("git_capabilities");
+}
+
+export function gitStage(paths: string[]): Promise<GitStatusSnapshot> {
+  return invoke<GitStatusSnapshot>("git_stage", { paths });
+}
+
+export function gitStageAll(): Promise<GitStatusSnapshot> {
+  return invoke<GitStatusSnapshot>("git_stage_all");
+}
+
+export function gitUnstage(paths: string[]): Promise<GitStatusSnapshot> {
+  return invoke<GitStatusSnapshot>("git_unstage", { paths });
+}
+
+export function gitUnstageAll(): Promise<GitStatusSnapshot> {
+  return invoke<GitStatusSnapshot>("git_unstage_all");
+}
+
+export function gitCommit(message: string, amend = false): Promise<GitStatusSnapshot> {
+  return invoke<GitStatusSnapshot>("git_commit", { message, amend });
+}
+
+export function gitBranches(): Promise<BranchList> {
+  return invoke<BranchList>("git_branches");
+}
+
+export function gitSwitchBranch(name: string): Promise<GitStatusSnapshot> {
+  return invoke<GitStatusSnapshot>("git_switch_branch", { name });
+}
+
+export function gitCreateBranch(name: string): Promise<GitStatusSnapshot> {
+  return invoke<GitStatusSnapshot>("git_create_branch", { name });
+}
+
+export function gitStashPush(message?: string): Promise<GitStatusSnapshot> {
+  return invoke<GitStatusSnapshot>("git_stash_push", { message: message ?? null });
+}
+
+export function gitStashPop(): Promise<GitStatusSnapshot> {
+  return invoke<GitStatusSnapshot>("git_stash_pop");
 }
 
 export function recentWorkspaces(): Promise<string[]> {

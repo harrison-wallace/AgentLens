@@ -3,6 +3,7 @@ import ActivityFeed from "./components/ActivityFeed";
 import CommandPalette from "./components/CommandPalette";
 import EmptyState from "./components/EmptyState";
 import FileTree from "./components/FileTree";
+import GitPanel from "./components/GitPanel";
 import Preview from "./components/Preview";
 import SettingsPanel from "./components/SettingsPanel";
 import Splitter from "./components/Splitter";
@@ -97,6 +98,8 @@ export default function App() {
     if (workspace) {
       void useTreeStore.getState().loadDir("");
       void useGitStore.getState().refresh();
+      void useGitStore.getState().refreshCapabilities();
+      void useGitStore.getState().refreshBranches();
       void useWatcherStore.getState().refresh();
       void useSettingsStore.getState().refresh();
     }
@@ -126,10 +129,18 @@ export default function App() {
         {!treeCollapsed && (
           <>
             <div
-              className={`min-h-0 min-w-0 ${flexPanel === "tree" ? "flex-1" : "shrink-0"}`}
+              className={`flex min-h-0 min-w-0 flex-col ${
+                flexPanel === "tree" ? "flex-1" : "shrink-0"
+              }`}
               style={flexPanel === "tree" ? undefined : { width: treeWidth }}
             >
-              <FileTree />
+              <div className="min-h-0 flex-1">
+                <FileTree />
+              </div>
+              {/* Source control sits under the tree rather than in its own
+                  column: it is about the same files, and a fourth column
+                  would cost more width than it earns. */}
+              <GitPanel />
             </div>
             {flexPanel !== "tree" && (
               <Splitter width={treeWidth} onResize={setTreeWidth} side="left" label="Resize tree" />

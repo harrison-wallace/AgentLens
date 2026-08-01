@@ -1,3 +1,4 @@
+import BranchControl from "./BranchControl";
 import { useGitStore } from "../stores/gitStore";
 import { useWatcherStore } from "../stores/watcherStore";
 import { countsFor } from "../lib/treeRows";
@@ -19,6 +20,7 @@ function watcherLabel(state: WatcherState, message: string | null): string {
 export default function StatusBar() {
   const status = useGitStore((s) => s.status);
   const watcher = useWatcherStore((s) => s.status);
+  const capabilities = useGitStore((s) => s.capabilities);
   const counts = countsFor(status?.files ?? []);
 
   let branchLabel = "—";
@@ -28,7 +30,10 @@ export default function StatusBar() {
 
   return (
     <footer className="flex h-7 shrink-0 items-center gap-4 border-t border-border bg-surface-raised px-3 text-xs text-text-muted">
-      <span className="truncate">{branchLabel}</span>
+      {/* The control replaces the label when mutations are possible; the
+          plain label remains for non-repos and read-only fallback. */}
+      <BranchControl />
+      {!capabilities?.canMutate && <span className="truncate">{branchLabel}</span>}
       {status?.isRepository && (
         <span className="flex items-center gap-3 font-mono">
           <span className="text-git-modified">M {counts.modified}</span>

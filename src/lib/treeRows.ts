@@ -93,10 +93,19 @@ export function parentDirsOf(paths: string[]): string[] {
   return dirs;
 }
 
-/** Counts for the status bar. Renamed/conflicted files aren't broken out. */
+/**
+ * Counts for the status bar. Renamed/conflicted files aren't broken out.
+ *
+ * Counts *files*, not status entries: a path with both staged and unstaged
+ * changes contributes two entries and must still count once, or the status
+ * bar overstates how much has changed.
+ */
 export function countsFor(files: GitFileStatus[]): GitCounts {
   const counts: GitCounts = { modified: 0, added: 0, deleted: 0, untracked: 0 };
+  const seen = new Set<string>();
   for (const file of files) {
+    if (seen.has(file.path)) continue;
+    seen.add(file.path);
     switch (file.status) {
       case "modified":
         counts.modified += 1;

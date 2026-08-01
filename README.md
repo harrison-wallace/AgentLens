@@ -2,7 +2,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/harrison-wallace/AgentLens/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/harrison-wallace/AgentLens/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/actions/workflow/status/harrison-wallace/AgentLens/release.yml?style=flat-square&label=release)](https://github.com/harrison-wallace/AgentLens/actions/workflows/release.yml)
-[![Version](https://img.shields.io/badge/version-0.0.7-6366f1?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.0.8-6366f1?style=flat-square)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 
 [![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app)
@@ -16,7 +16,7 @@ read-only window into what your terminal coding agent (Claude Code, opencode,
 …) is doing to a directory: live file tree, change feed, git status,
 read-only previews. Runs on Windows and Ubuntu.
 
-**Status:** v0.0.7 — pre-alpha, with the local-observer feature set now in
+**Status:** v0.0.8 — pre-alpha, with the local-observer feature set now in
 place and awaiting acceptance testing on both platforms.
 
 <!-- TODO: screenshot once Phase 1 (local observer) lands -->
@@ -37,6 +37,10 @@ place and awaiting acceptance testing on both platforms.
   they are what the agent is being told to do.
 - **Pinned paths** — pin any file or directory from its tree row to keep it
   visible regardless of `.gitignore` and grouped at the top of the tree.
+- **Git actions** — stage, unstage, commit (with amend), switch and create
+  branches, stash and pop, without leaving the app. Mutations go through the
+  `git` CLI, so your hooks run and your config is honoured exactly as in the
+  terminal.
 - **`Ctrl+P` file jump**, arrow-key tree navigation, resizable and
   collapsible panels, and per-workspace extra ignore globs.
 
@@ -50,8 +54,9 @@ real editor; AgentLens stays out of the way.
 
 Three rules follow from that, and they explain most of the design:
 
-- **Read-only by default.** Previews never edit. Git operations are the only
-  thing that will ever mutate your repository.
+- **Read-only by default.** Previews never edit, and nothing is written
+  behind your back. Git operations are the only thing that mutates your
+  repository, and only when you ask for one.
 - **Ignore aggressively, but not blindly.** `.gitignore` marks two different
   things — build noise, and files that are yours rather than the team's. The
   first is hidden; the second (agent context files, anything you pin) stays

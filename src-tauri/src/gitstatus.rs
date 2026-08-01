@@ -43,17 +43,41 @@ pub fn status(root: &Path) -> Result<GitStatusSnapshot, String> {
         let Some(rel_path) = entry.path() else {
             continue;
         };
-        let Some((kind, staged)) = classify(entry.status()) else {
-            continue;
-        };
         let Some(path) = to_workspace_relative(root, &root.join(rel_path)) else {
             continue;
         };
-        files.push(GitFileStatus {
-            path,
-            status: kind,
-            staged,
-        });
+        let flags = entry.status();
+
+        // A conflicted path has no meaningful two-sided split — it is one
+        // problem to resolve, not staged work plus unstaged work.
+        if flags.is_conflicted() {
+            files.push(GitFileStatus {
+                path,
+                status: GitStatusKind::Conflicted,
+                staged: false,
+            });
+            continue;
+        }
+
+        // Both sides, when both differ. A file staged and then edited again
+        // (`MM`) genuinely has staged work *and* unstaged work, and collapsing
+        // it to one entry hides whichever side loses — which made the commit
+        // box report nothing to commit while `git commit` would have
+        // committed the staged version.
+        if let Some(status) = classify_index(flags) {
+            files.push(GitFileStatus {
+                path: path.clone(),
+                status,
+                staged: true,
+            });
+        }
+        if let Some(status) = classify_worktree(flags) {
+            files.push(GitFileStatus {
+                path,
+                status,
+                staged: false,
+            });
+        }
     }
 
     Ok(GitStatusSnapshot {
@@ -63,38 +87,34 @@ pub fn status(root: &Path) -> Result<GitStatusSnapshot, String> {
     })
 }
 
-/// Map git2's status flags to one `(GitStatusKind, staged)` per path.
-/// Worktree flags win over index flags when both are set, since that's
-/// what the tree badge should show.
-fn classify(flags: Status) -> Option<(GitStatusKind, bool)> {
-    if flags.is_conflicted() {
-        return Some((GitStatusKind::Conflicted, false));
-    }
-    if flags.is_wt_new() {
-        return Some((GitStatusKind::Untracked, false));
-    }
-    if flags.is_wt_modified() || flags.is_wt_typechange() {
-        return Some((GitStatusKind::Modified, false));
-    }
-    if flags.is_wt_deleted() {
-        return Some((GitStatusKind::Deleted, false));
-    }
-    if flags.is_wt_renamed() {
-        return Some((GitStatusKind::Renamed, false));
-    }
+/// How the index differs from `HEAD`, if it does.
+fn classify_index(flags: Status) -> Option<GitStatusKind> {
     if flags.is_index_new() {
-        return Some((GitStatusKind::Added, true));
+        Some(GitStatusKind::Added)
+    } else if flags.is_index_modified() || flags.is_index_typechange() {
+        Some(GitStatusKind::Modified)
+    } else if flags.is_index_deleted() {
+        Some(GitStatusKind::Deleted)
+    } else if flags.is_index_renamed() {
+        Some(GitStatusKind::Renamed)
+    } else {
+        None
     }
-    if flags.is_index_modified() || flags.is_index_typechange() {
-        return Some((GitStatusKind::Modified, true));
+}
+
+/// How the working tree differs from the index, if it does.
+fn classify_worktree(flags: Status) -> Option<GitStatusKind> {
+    if flags.is_wt_new() {
+        Some(GitStatusKind::Untracked)
+    } else if flags.is_wt_modified() || flags.is_wt_typechange() {
+        Some(GitStatusKind::Modified)
+    } else if flags.is_wt_deleted() {
+        Some(GitStatusKind::Deleted)
+    } else if flags.is_wt_renamed() {
+        Some(GitStatusKind::Renamed)
+    } else {
+        None
     }
-    if flags.is_index_deleted() {
-        return Some((GitStatusKind::Deleted, true));
-    }
-    if flags.is_index_renamed() {
-        return Some((GitStatusKind::Renamed, true));
-    }
-    None
 }
 
 #[cfg(test)]
@@ -190,5 +210,52 @@ mod tests {
         assert_eq!(snapshot.files[0].path, "file.txt");
         assert_eq!(snapshot.files[0].status, GitStatusKind::Modified);
         assert!(!snapshot.files[0].staged);
+    }
+
+    #[test]
+    fn a_file_staged_then_edited_again_reports_both_sides() {
+        // Regression: this used to collapse to the working-tree side alone,
+        // so the commit box saw nothing staged and disabled itself while
+        // `git commit` would happily have committed the staged version. An
+        // agent editing a file it already staged hits this constantly.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let repo = Repository::init(root).unwrap();
+        fs::write(root.join("file.txt"), "one\n").unwrap();
+        commit_all(&repo, "initial");
+
+        fs::write(root.join("file.txt"), "two\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("file.txt")).unwrap();
+        index.write().unwrap();
+        fs::write(root.join("file.txt"), "three\n").unwrap();
+
+        let snapshot = status(root).unwrap();
+        let sides: Vec<(&str, bool)> = snapshot
+            .files
+            .iter()
+            .map(|f| (f.path.as_str(), f.staged))
+            .collect();
+
+        assert_eq!(sides, vec![("file.txt", true), ("file.txt", false)]);
+    }
+
+    #[test]
+    fn a_wholly_staged_file_reports_only_the_staged_side() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let repo = Repository::init(root).unwrap();
+        fs::write(root.join("kept.txt"), "x\n").unwrap();
+        commit_all(&repo, "initial");
+
+        fs::write(root.join("added.txt"), "new\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("added.txt")).unwrap();
+        index.write().unwrap();
+
+        let snapshot = status(root).unwrap();
+        assert_eq!(snapshot.files.len(), 1, "no phantom unstaged entry");
+        assert_eq!(snapshot.files[0].status, GitStatusKind::Added);
+        assert!(snapshot.files[0].staged);
     }
 }

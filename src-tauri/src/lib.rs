@@ -1,4 +1,5 @@
 mod agents;
+mod gitops;
 mod gitstatus;
 mod paths;
 mod preview;
@@ -12,14 +13,14 @@ mod workspace;
 
 use agents::{AgentProvider, AgentState};
 use protocol::{
-    AgentPoll, AgentRootInfo, AppSettings, CommandResult, DirEntryNode, GitStatusSnapshot,
-    PinnedEntry, PreviewPayload, SessionDiff, SessionRef, WatcherStatus, WorkspaceInfo,
-    WorkspaceSettings,
+    AgentPoll, AgentRootInfo, AppSettings, BranchList, CommandResult, DirEntryNode,
+    GitCapabilities, GitStatusSnapshot, PinnedEntry, PreviewPayload, SessionDiff, SessionRef,
+    WatcherStatus, WorkspaceInfo, WorkspaceSettings,
 };
 use settings::SettingsState;
 use snapshots::SessionState;
 use std::path::PathBuf;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 use watcher::WatcherManager;
 use workspace::WorkspaceState;
@@ -148,6 +149,120 @@ fn list_files(
 fn git_status(state: State<WorkspaceState>) -> CommandResult<GitStatusSnapshot> {
     let ws = workspace::current(&state)?;
     gitstatus::status(&ws.root)
+}
+
+/// Whether git mutations can be offered at all, so the UI can degrade to
+/// read-only with a hint instead of showing buttons that fail when pressed.
+#[tauri::command]
+fn git_capabilities(state: State<WorkspaceState>) -> CommandResult<GitCapabilities> {
+    let ws = workspace::current(&state)?;
+    Ok(gitops::capabilities(&ws.root))
+}
+
+/// Run a mutation, then re-read status and push it to the UI.
+///
+/// Every git write goes through here: a mutation whose result isn't reflected
+/// immediately reads as a failure, and `.git`-only changes are filtered out of
+/// the watcher's feed, so nothing else would prompt the refresh.
+fn mutate(
+    app: &AppHandle,
+    root: &std::path::Path,
+    op: impl FnOnce() -> CommandResult<()>,
+) -> CommandResult<GitStatusSnapshot> {
+    op()?;
+    let snapshot = gitstatus::status(root)?;
+    let _ = app.emit(protocol::EVENT_GIT_STATUS, &snapshot);
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn git_stage(
+    paths: Vec<String>,
+    state: State<WorkspaceState>,
+    app: AppHandle,
+) -> CommandResult<GitStatusSnapshot> {
+    let ws = workspace::current(&state)?;
+    mutate(&app, &ws.root, || gitops::stage(&ws.root, &paths))
+}
+
+#[tauri::command]
+fn git_stage_all(state: State<WorkspaceState>, app: AppHandle) -> CommandResult<GitStatusSnapshot> {
+    let ws = workspace::current(&state)?;
+    mutate(&app, &ws.root, || gitops::stage_all(&ws.root))
+}
+
+#[tauri::command]
+fn git_unstage(
+    paths: Vec<String>,
+    state: State<WorkspaceState>,
+    app: AppHandle,
+) -> CommandResult<GitStatusSnapshot> {
+    let ws = workspace::current(&state)?;
+    mutate(&app, &ws.root, || gitops::unstage(&ws.root, &paths))
+}
+
+#[tauri::command]
+fn git_unstage_all(
+    state: State<WorkspaceState>,
+    app: AppHandle,
+) -> CommandResult<GitStatusSnapshot> {
+    let ws = workspace::current(&state)?;
+    mutate(&app, &ws.root, || gitops::unstage_all(&ws.root))
+}
+
+#[tauri::command]
+fn git_commit(
+    message: String,
+    amend: bool,
+    state: State<WorkspaceState>,
+    app: AppHandle,
+) -> CommandResult<GitStatusSnapshot> {
+    let ws = workspace::current(&state)?;
+    mutate(&app, &ws.root, || gitops::commit(&ws.root, &message, amend))
+}
+
+#[tauri::command]
+fn git_branches(state: State<WorkspaceState>) -> CommandResult<BranchList> {
+    let ws = workspace::current(&state)?;
+    gitops::branches(&ws.root)
+}
+
+#[tauri::command]
+fn git_switch_branch(
+    name: String,
+    state: State<WorkspaceState>,
+    app: AppHandle,
+) -> CommandResult<GitStatusSnapshot> {
+    let ws = workspace::current(&state)?;
+    mutate(&app, &ws.root, || gitops::switch_branch(&ws.root, &name))
+}
+
+#[tauri::command]
+fn git_create_branch(
+    name: String,
+    state: State<WorkspaceState>,
+    app: AppHandle,
+) -> CommandResult<GitStatusSnapshot> {
+    let ws = workspace::current(&state)?;
+    mutate(&app, &ws.root, || gitops::create_branch(&ws.root, &name))
+}
+
+#[tauri::command]
+fn git_stash_push(
+    message: Option<String>,
+    state: State<WorkspaceState>,
+    app: AppHandle,
+) -> CommandResult<GitStatusSnapshot> {
+    let ws = workspace::current(&state)?;
+    mutate(&app, &ws.root, || {
+        gitops::stash_push(&ws.root, message.as_deref())
+    })
+}
+
+#[tauri::command]
+fn git_stash_pop(state: State<WorkspaceState>, app: AppHandle) -> CommandResult<GitStatusSnapshot> {
+    let ws = workspace::current(&state)?;
+    mutate(&app, &ws.root, || gitops::stash_pop(&ws.root))
 }
 
 #[tauri::command]
@@ -313,6 +428,17 @@ pub fn run() {
             list_dir,
             list_files,
             git_status,
+            git_capabilities,
+            git_stage,
+            git_stage_all,
+            git_unstage,
+            git_unstage_all,
+            git_commit,
+            git_branches,
+            git_switch_branch,
+            git_create_branch,
+            git_stash_push,
+            git_stash_pop,
             read_preview,
             open_externally,
             session_diff,
