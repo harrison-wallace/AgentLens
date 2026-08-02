@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { DEFAULT_FEED_MAX_ENTRIES, MAX_FEED_MAX_ENTRIES, MIN_FEED_MAX_ENTRIES } from "../lib/feed";
+import {
+  DEFAULT_PREVIEW_FONT_SIZE,
+  MAX_PREVIEW_FONT_SIZE,
+  MIN_PREVIEW_FONT_SIZE,
+  useAppearanceStore,
+} from "../stores/appearanceStore";
 import { useConnectionStore } from "../stores/connectionStore";
 import { useSettingsStore } from "../stores/settingsStore";
 import type { AgentKind } from "../lib/protocol";
@@ -99,6 +105,8 @@ export default function SettingsPanel() {
             disabled={saving}
             onChange={() => void toggleShowAgentContext()}
           />
+          <UiZoom />
+          <PreviewFontSize />
           <FeedMaxEntries
             value={app.feedMaxEntries}
             disabled={saving}
@@ -231,6 +239,122 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       <h3 className="section-label pb-2">{title}</h3>
       <div className="flex flex-col gap-3">{children}</div>
     </section>
+  );
+}
+
+/**
+ * Whole-window scale. Duplicated here from `Ctrl +/-/0` because a setting
+ * nobody can find isn't one — and someone who has zoomed too far to read the
+ * footer chip needs a way back that doesn't depend on remembering a shortcut.
+ */
+function UiZoom() {
+  const zoom = useAppearanceStore((s) => s.zoom);
+  const zoomIn = useAppearanceStore((s) => s.zoomIn);
+  const zoomOut = useAppearanceStore((s) => s.zoomOut);
+  const resetZoom = useAppearanceStore((s) => s.resetZoom);
+
+  return (
+    <div>
+      <span className="block text-xs font-medium text-text">Interface zoom</span>
+      <p className="text-xs text-text-muted">
+        Scales the whole window — tree, feed, preview and footer alike. Also on{" "}
+        <kbd className="text-text">Ctrl</kbd> <kbd className="text-text">+</kbd> /{" "}
+        <kbd className="text-text">−</kbd> / <kbd className="text-text">0</kbd>.
+      </p>
+      <div className="mt-1.5 flex items-center gap-1">
+        <ZoomButton label="Zoom out" onClick={zoomOut}>
+          −
+        </ZoomButton>
+        <span className="w-14 text-center text-xs tabular-nums text-text">
+          {Math.round(zoom * 100)}%
+        </span>
+        <ZoomButton label="Zoom in" onClick={zoomIn}>
+          +
+        </ZoomButton>
+        <button
+          type="button"
+          onClick={resetZoom}
+          className="ml-2 h-8 rounded border border-border px-2.5 text-xs text-text-muted hover:bg-hover hover:text-text"
+        >
+          Reset
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ZoomButton({
+  label,
+  onClick,
+  children,
+}: {
+  label: string;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      className="h-8 w-8 rounded border border-border text-xs text-text hover:bg-hover"
+    >
+      {children}
+    </button>
+  );
+}
+
+/**
+ * Preview text size, independent of the zoom above: the chrome is deliberately
+ * dense (DESIGN.md), but the preview is the pane you actually read, and the
+ * two wants don't have to agree.
+ */
+function PreviewFontSize() {
+  const size = useAppearanceStore((s) => s.previewFontSize);
+  const setPreviewFontSize = useAppearanceStore((s) => s.setPreviewFontSize);
+  const [text, setText] = useState(String(size));
+
+  useEffect(() => {
+    setText(String(size));
+  }, [size]);
+
+  const commit = () => {
+    const parsed = Number.parseInt(text, 10);
+    if (!Number.isFinite(parsed)) {
+      setText(String(size));
+      return;
+    }
+    setPreviewFontSize(parsed);
+  };
+
+  return (
+    <div>
+      <label className="block text-xs font-medium text-text" htmlFor="preview-font-size">
+        Preview text size
+      </label>
+      <p className="text-xs text-text-muted">
+        Code, diffs and rendered markdown in the preview pane, in pixels. Default{" "}
+        {DEFAULT_PREVIEW_FONT_SIZE}; range {MIN_PREVIEW_FONT_SIZE}–{MAX_PREVIEW_FONT_SIZE}. The
+        interface zoom above multiplies it.
+      </p>
+      <input
+        id="preview-font-size"
+        type="number"
+        min={MIN_PREVIEW_FONT_SIZE}
+        max={MAX_PREVIEW_FONT_SIZE}
+        step={1}
+        value={text}
+        onChange={(event) => setText(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            (event.target as HTMLInputElement).blur();
+          }
+        }}
+        className="mt-1.5 h-8 w-28 rounded border border-border bg-surface px-2.5 text-xs text-text outline-none placeholder:text-text-muted focus:border-accent"
+      />
+    </div>
   );
 }
 

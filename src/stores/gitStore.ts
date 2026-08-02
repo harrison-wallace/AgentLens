@@ -61,6 +61,11 @@ interface GitStore {
    * tells the user what to do, and a modal would interrupt to say it.
    */
   error: string | null;
+  /**
+   * The branch a switch just failed to reach, so the failure can offer the
+   * fix instead of only describing it. Cleared by the next mutation.
+   */
+  failedSwitch: string | null;
   refresh: () => Promise<void>;
   refreshCapabilities: () => Promise<void>;
   refreshBranches: () => Promise<void>;
@@ -73,6 +78,8 @@ interface GitStore {
   unstageAll: () => Promise<boolean>;
   commit: (message: string, amend?: boolean) => Promise<boolean>;
   switchBranch: (name: string) => Promise<boolean>;
+  /** Stash, switch, and put the work back if the switch still fails. */
+  stashAndSwitch: (name: string) => Promise<boolean>;
   createBranch: (name: string) => Promise<boolean>;
   stashPush: (message?: string) => Promise<boolean>;
   stashPop: () => Promise<boolean>;
@@ -105,7 +112,7 @@ async function mutate(set: Setter, op: () => Promise<GitStatusSnapshot>): Promis
 }
 
 async function attempt(set: Setter, op: () => Promise<GitStatusSnapshot>): Promise<boolean> {
-  set({ busy: true, error: null });
+  set({ busy: true, error: null, failedSwitch: null });
   try {
     const status = await op();
     set({ status, statusByPath: toStatusByPath(status), busy: false });
@@ -123,6 +130,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
   branches: null,
   busy: false,
   error: null,
+  failedSwitch: null,
 
   refresh: async () => {
     try {
@@ -164,8 +172,28 @@ export const useGitStore = create<GitStore>((set, get) => ({
   switchBranch: async (name) => {
     const ok = await mutate(set, () => gitSwitchBranch(name));
     if (ok) await get().refreshBranches();
+    // Remembered so the error can offer to stash; `attempt` clears it as soon
+    // as anything else is attempted.
+    else set({ failedSwitch: name });
     return ok;
   },
+
+  // The four-step dance the error used to leave to the user: stash, switch,
+  // and — if the switch fails for a reason stashing was never going to fix —
+  // put the work straight back rather than leaving it parked in a stash they
+  // did not ask for.
+  stashAndSwitch: async (name) => {
+    if (!(await get().stashPush())) return false;
+    if (await get().switchBranch(name)) return true;
+    // Popping is itself a mutation, and a successful one clears the error —
+    // including the switch failure that is the whole reason for popping. Put
+    // it back only when the pop itself succeeded; a failed pop's own message
+    // (conflict, empty stash) is the one the user needs to act on.
+    const failure = get().error;
+    if (await get().stashPop()) set({ error: failure });
+    return false;
+  },
+
   createBranch: async (name) => {
     const ok = await mutate(set, () => gitCreateBranch(name));
     if (ok) await get().refreshBranches();
@@ -175,7 +203,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
   stashPush: (message) => mutate(set, () => gitStashPush(message)),
   stashPop: () => mutate(set, () => gitStashPop()),
 
-  dismissError: () => set({ error: null }),
+  dismissError: () => set({ error: null, failedSwitch: null }),
 
   reset: () =>
     set({
@@ -185,5 +213,6 @@ export const useGitStore = create<GitStore>((set, get) => ({
       branches: null,
       busy: false,
       error: null,
+      failedSwitch: null,
     }),
 }));

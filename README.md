@@ -1,8 +1,12 @@
-# AgentLens
+<p align="center">
+  <img src="docs/images/lens-logo.svg" alt="" width="96" height="96">
+</p>
+
+<h1 align="center">AgentLens</h1>
 
 [![CI](https://img.shields.io/github/actions/workflow/status/harrison-wallace/AgentLens/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/harrison-wallace/AgentLens/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/actions/workflow/status/harrison-wallace/AgentLens/release.yml?style=flat-square&label=release)](https://github.com/harrison-wallace/AgentLens/actions/workflows/release.yml)
-[![Version](https://img.shields.io/badge/version-0.3.1-6366f1?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.4.0-6366f1?style=flat-square)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 
 [![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app)
@@ -16,7 +20,7 @@ read-only window into what your terminal coding agent (Claude Code, opencode,
 …) is doing to a directory: live file tree, change feed, git status,
 read-only previews. Runs on Windows and Ubuntu.
 
-**Status:** v0.3.1 — the MVP feature set is complete, including remote
+**Status:** v0.4.0 — the MVP feature set is complete, including remote
 workspaces over WSL and SSH with no manual setup on the remote machine. Still
 pre-alpha: acceptance testing on Windows and Ubuntu is outstanding.
 
@@ -49,7 +53,8 @@ pre-alpha: acceptance testing on Windows and Ubuntu is outstanding.
   stdio: no ports, no tunnels, and SSH auth is your own `ssh` binary's. If the
   machine has never run AgentLens, the app installs the daemon there itself.
   See [docs/REMOTE.md](docs/REMOTE.md).
-- **`Ctrl+P` file jump**, **`F11` fullscreen**, arrow-key tree navigation,
+- **`Ctrl+P` file jump**, **`F11` fullscreen**, **`Ctrl` `+`/`−`/`0` zoom**
+  (with an independent preview text size), arrow-key tree navigation,
   resizable and collapsible panels, and per-workspace extra ignore globs.
 
 ## Why not VS Code / a file explorer
@@ -82,6 +87,8 @@ Settings are split by what they affect, not where they're stored.
 | **This workspace** | Pinned paths                  | Files and directories kept visible and grouped at the top of the tree.           |
 | **This workspace** | Extra ignore globs            | Gitignore syntax; hidden from the tree, the file jump, and the activity feed.    |
 | **All workspaces** | Show agent context            | Surface `AGENTS.md`, `CLAUDE.md` and friends even when git ignores them.         |
+| **All workspaces** | Interface zoom                | Scales the whole window. Also `Ctrl` `+`/`−`/`0`; shown in the status bar.       |
+| **All workspaces** | Preview text size             | Code, diffs and markdown in the preview pane only. The zoom multiplies it.       |
 | **All workspaces** | Agent session folders         | Where to look for coding-agent sessions. Detected automatically; add your own.   |
 | **All workspaces** | Activity feed length          | Max batches kept in the feed (default 250). Session +/− totals still accumulate. |
 | **Remote**         | Set up machines automatically | Install the observer on a WSL distro or SSH host that hasn't got one.            |
@@ -166,3 +173,8 @@ before it will build.
 ## License
 
 [MIT](LICENSE)
+
+The lens logo is [_Lens_](https://www.svgrepo.com/svg/5427/lens) from SVG Repo's
+Camera And Accessories 3 collection, released under
+[CC0](https://creativecommons.org/publicdomain/zero/1.0/). No attribution is
+required; it is recorded here so the asset's provenance is answerable.

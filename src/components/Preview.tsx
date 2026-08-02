@@ -169,13 +169,13 @@ function TextPreview({ text, language }: { text: string; language: string }) {
   };
 
   if (html === null) {
-    return <pre className="p-3 text-xs leading-relaxed text-text">{text}</pre>;
+    return <pre className="preview-text p-3 leading-relaxed text-text">{text}</pre>;
   }
 
   return (
     <div
       onClick={swallowLinks}
-      className={language === "markdown" ? "markdown-body p-4" : "shiki-body p-1 text-xs"}
+      className={language === "markdown" ? "markdown-body p-4" : "shiki-body p-1"}
       dangerouslySetInnerHTML={{ __html: html }}
     />
   );
@@ -197,7 +197,7 @@ function DiffTab({ diff }: { diff: SessionDiff }) {
   }
 
   return (
-    <div className="text-xs leading-relaxed">
+    <div className="preview-text leading-relaxed">
       <p className="border-b border-border px-3 py-1 tabular-nums text-text-muted">
         <span className="text-git-added">+ {summary.added}</span>{" "}
         <span className="text-git-deleted">− {summary.removed}</span>

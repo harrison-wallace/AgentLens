@@ -13,9 +13,10 @@ import {
   kindCountParts,
   nextFeedSort,
   presentFeedEntries,
+  splitPath,
   type FeedSort,
 } from "../lib/feed";
-import type { FsEventKind } from "../lib/protocol";
+import type { FsEvent, FsEventKind } from "../lib/protocol";
 
 /** Render at most this many rows per batch; the rest collapse to "+N more". */
 const MAX_ROWS_PER_BATCH = 20;
@@ -214,23 +215,46 @@ function FeedBlock({
       <ul className="mt-1 flex flex-col gap-0.5">
         {shown.map((event, i) => (
           <li key={`${event.path}:${i}`}>
-            <button
-              type="button"
-              onClick={() => onSelect(event.path)}
-              title={event.path}
-              className="flex w-full items-center gap-2 truncate px-1 py-0.5 text-left text-xs text-text-body hover:bg-hover"
-            >
-              <span
-                className={`w-3 shrink-0 text-center text-[11px] tabular-nums ${KIND_CLASS[event.kind]}`}
-              >
-                {KIND_BADGE[event.kind]}
-              </span>
-              <span className="min-w-0 flex-1 truncate">{event.path}</span>
-            </button>
+            <EventRow event={event} onSelect={onSelect} />
           </li>
         ))}
       </ul>
       {hidden > 0 && <p className="mt-1 px-1 text-[11px] text-text-muted">+{hidden} more</p>}
     </div>
+  );
+}
+
+/**
+ * One changed file: name first, then the directory holding it.
+ *
+ * The panel is rarely wide enough for a full path, and a single truncated
+ * string loses its tail — which is the filename, the only part that says
+ * *which* file this is. Two spans let the directory absorb the truncation
+ * instead, from the left, so deep sibling paths stop rendering identically.
+ */
+function EventRow({ event, onSelect }: { event: FsEvent; onSelect: (path: string) => void }) {
+  const { name, dir } = splitPath(event.path);
+
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(event.path)}
+      title={event.path}
+      className="flex w-full items-baseline gap-2 px-1 py-0.5 text-left text-xs hover:bg-hover"
+    >
+      <span
+        className={`w-3 shrink-0 self-center text-center text-[11px] tabular-nums ${KIND_CLASS[event.kind]}`}
+      >
+        {KIND_BADGE[event.kind]}
+      </span>
+      {/* The name gets the space it needs and truncates only when it alone
+          overruns the row; whatever is left over goes to the directory. */}
+      <span className="min-w-0 shrink truncate text-text-body">{name}</span>
+      {dir && (
+        <span className="truncate-start min-w-0 flex-1 text-[11px] text-text-muted">
+          <bdi>{dir}</bdi>
+        </span>
+      )}
+    </button>
   );
 }

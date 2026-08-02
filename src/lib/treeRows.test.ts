@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { countsFor, flattenTree, gitBadgeFor, parentDirsOf } from "./treeRows";
+import { countsFor, flattenTree, gitBadgeFor, parentDirsOf, rollUpHidden } from "./treeRows";
 import type { DirEntryNode, GitFileStatus, GitStatusKind } from "./protocol";
 
 function entry(name: string, path: string, isDir: boolean): DirEntryNode {
@@ -138,5 +138,41 @@ describe("parentDirsOf", () => {
 
   it("returns an empty array for an empty input", () => {
     expect(parentDirsOf([])).toEqual([]);
+  });
+});
+
+describe("rollUpHidden", () => {
+  const visible = new Set(["src", "src/lib", "README.md"]);
+
+  it("charges a hidden path to its deepest visible ancestor", () => {
+    expect(rollUpHidden(["src/lib/deep/nested/a.ts"], visible)).toEqual({ "src/lib": 1 });
+    expect(rollUpHidden(["src/components/Auth.tsx"], visible)).toEqual({ src: 1 });
+  });
+
+  it("ignores paths that have a row of their own", () => {
+    expect(rollUpHidden(["README.md", "src", "src/lib"], visible)).toEqual({});
+  });
+
+  it("counts every hidden path under the same stand-in", () => {
+    expect(rollUpHidden(["src/a/one.ts", "src/a/two.ts", "src/b/three.ts"], visible)).toEqual({
+      src: 3,
+    });
+  });
+
+  it("drops a path with no visible ancestor at all", () => {
+    expect(rollUpHidden(["vendor/pkg/x.ts", "top-level.txt"], visible)).toEqual({});
+  });
+
+  it("moves the count down as ancestors are revealed", () => {
+    const path = ["src/lib/deep/a.ts"];
+    expect(rollUpHidden(path, new Set(["src"]))).toEqual({ src: 1 });
+    expect(rollUpHidden(path, new Set(["src", "src/lib"]))).toEqual({ "src/lib": 1 });
+    expect(rollUpHidden(path, new Set(["src", "src/lib", "src/lib/deep"]))).toEqual({
+      "src/lib/deep": 1,
+    });
+    // Fully revealed: the file's own row carries it, so nothing rolls up.
+    expect(
+      rollUpHidden(path, new Set(["src", "src/lib", "src/lib/deep", "src/lib/deep/a.ts"])),
+    ).toEqual({});
   });
 });

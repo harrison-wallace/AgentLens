@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-02
+
+Zoom, a type-to-filter branch picker, and tree decorations that surface changes
+hidden under collapsed directories.
+
+### Added
+
+- **Interface zoom** — scales the whole webview (`Ctrl` `+`/`−`/`0`, Settings,
+  status-bar chip when not 100%). Discrete steps from 80% to 200%, persisted
+  per display in `localStorage`.
+- **Preview text size** — independent of zoom: code, diffs and markdown in the
+  preview pane only (Settings → All workspaces).
+- **Branch picker** — type-to-filter checkout in the same QuickPick overlay as
+  file jump; create a branch by typing a new name; stash / pop in the footer.
+- **Stash and switch** — when a checkout fails with a dirty tree, the git
+  error offers one-click stash → switch (and restores the tree if the switch
+  still fails).
+- **Collapsed-tree roll-ups** — recently-changed counts and git status counts
+  bubble up onto the deepest visible ancestor so collapsed directories still
+  show that work is happening underneath.
+- **Activity feed name-first rows** — filename first, directory truncated from
+  the left, so deep sibling paths stay distinguishable in a narrow panel.
+- **Lens logo** — app icon set, empty-state and header mark, README branding
+  (CC0 asset with provenance recorded).
+
+### Fixed
+
+- A failed recovery `stashPop` after stash-and-switch no longer overwrites its
+  own error with the earlier switch failure.
+- QuickPick cursor stays in range when the result list shrinks without a
+  query change.
+
 ## [0.3.1] - 2026-08-02
 
 ### Added

@@ -3,7 +3,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useGitStore } from "../stores/gitStore";
 import { useSettingsStore } from "../stores/settingsStore";
 import { useTreeStore } from "../stores/treeStore";
-import { flattenTree, gitBadgeFor, type TreeRow } from "../lib/treeRows";
+import { flattenTree, gitBadgeFor, rollUpHidden, type TreeRow } from "../lib/treeRows";
 import type { GitStatusKind, PinnedEntry } from "../lib/protocol";
 
 const ROW_HEIGHT = 24;
@@ -65,6 +65,22 @@ export default function FileTree() {
   }, [childrenByPath, expanded, errors]);
 
   const pinned = useMemo(() => new Set(pinnedPaths), [pinnedPaths]);
+
+  // Both decorations answer the same question for a collapsed subtree — "what
+  // is in there that I can't see" — so they share one roll-up. Keyed off
+  // `displayRows`, which only changes on expand/collapse/load, never on scroll.
+  const visiblePaths = useMemo(
+    () => new Set(displayRows.flatMap((d) => (d.kind === "node" ? [d.row.path] : []))),
+    [displayRows],
+  );
+  const hiddenChanges = useMemo(
+    () => rollUpHidden(Object.keys(recentlyChanged), visiblePaths),
+    [recentlyChanged, visiblePaths],
+  );
+  const hiddenStatus = useMemo(
+    () => rollUpHidden(Object.keys(statusByPath), visiblePaths),
+    [statusByPath, visiblePaths],
+  );
 
   const virtualizer = useVirtualizer({
     count: displayRows.length,
@@ -195,6 +211,10 @@ export default function FileTree() {
             const isPinned = pinned.has(row.path);
             const statusKind = statusByPath[row.path];
             const badge = gitBadgeFor(row.path, statusByPath);
+            // Only ever non-zero on a row hiding something: a row whose own
+            // path is decorated shows that decoration instead.
+            const changedInside = hiddenChanges[row.path] ?? 0;
+            const statusInside = hiddenStatus[row.path] ?? 0;
 
             return (
               <div
@@ -211,7 +231,13 @@ export default function FileTree() {
                 style={{ ...commonStyle, paddingLeft: row.depth * 14 + 8 }}
                 className={`group flex cursor-default items-center gap-1 pr-4 text-left text-xs ${
                   isSelected ? "bg-selected text-text" : "text-text-body hover:bg-hover"
-                } ${isRecentlyChanged ? "tree-row-glow" : ""}`}
+                } ${
+                  isRecentlyChanged
+                    ? "tree-row-glow"
+                    : changedInside > 0
+                      ? "tree-row-glow-proxy"
+                      : ""
+                }`}
               >
                 {row.isDir ? (
                   <span
@@ -241,10 +267,35 @@ export default function FileTree() {
                     ◆
                   </span>
                 )}
+                {changedInside > 0 && (
+                  <span
+                    className="shrink-0 text-[11px] tabular-nums text-glow"
+                    title={`${changedInside} recently changed ${
+                      changedInside === 1 ? "file" : "files"
+                    } inside — expand to see ${changedInside === 1 ? "it" : "them"}`}
+                    aria-label={`${changedInside} recently changed inside`}
+                  >
+                    ●{changedInside}
+                  </span>
+                )}
                 {isLoading && <span className="shrink-0 text-[11px] text-text-muted">…</span>}
+                {/* The badge slot takes a letter for this row's own git status,
+                    and a count for the statuses collapsed underneath it. A row
+                    can't have both, so they can share the slot. */}
                 {!isLoading && badge && statusKind && (
                   <span className={`shrink-0 text-[11px] tabular-nums ${BADGE_CLASS[statusKind]}`}>
                     {badge}
+                  </span>
+                )}
+                {!isLoading && !badge && statusInside > 0 && (
+                  <span
+                    className="shrink-0 text-[11px] tabular-nums text-text-muted"
+                    title={`${statusInside} changed ${
+                      statusInside === 1 ? "file" : "files"
+                    } inside, per git`}
+                    aria-label={`${statusInside} changed inside`}
+                  >
+                    {statusInside}
                   </span>
                 )}
                 <PinButton path={row.path} pinned={isPinned} />

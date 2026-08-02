@@ -103,23 +103,53 @@ export default function GitPanel() {
           {error && (
             // A toast, not a dialog: git's own words, dismissible, and it
             // never blocks the next attempt.
-            <div className="flex items-start gap-2 border-t border-border bg-danger/10 px-2 py-1.5">
-              <pre className="min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-xs text-danger">
-                {error}
-              </pre>
-              <button
-                type="button"
-                onClick={dismissError}
-                aria-label="Dismiss error"
-                className="shrink-0 text-xs text-text-muted hover:text-text"
-              >
-                ✕
-              </button>
+            <div className="border-t border-border bg-danger/10 px-2 py-1.5">
+              <div className="flex items-start gap-2">
+                <pre className="min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-xs text-danger">
+                  {error}
+                </pre>
+                <button
+                  type="button"
+                  onClick={dismissError}
+                  aria-label="Dismiss error"
+                  className="shrink-0 text-xs text-text-muted hover:text-text"
+                >
+                  ✕
+                </button>
+              </div>
+              <StashAndSwitch dirty={status.files.length > 0} />
             </div>
           )}
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * The fix for the failure above it, when the failure is one stashing can fix.
+ *
+ * Shown only for a switch that failed with work in the tree: git's message
+ * says what went wrong, and this saves the user from replying to it with four
+ * trips through the branch menu. A clean tree means the switch failed for
+ * some other reason, and stashing nothing would not help.
+ */
+function StashAndSwitch({ dirty }: { dirty: boolean }) {
+  const failedSwitch = useGitStore((s) => s.failedSwitch);
+  const busy = useGitStore((s) => s.busy);
+  const stashAndSwitch = useGitStore((s) => s.stashAndSwitch);
+
+  if (!failedSwitch || !dirty) return null;
+
+  return (
+    <button
+      type="button"
+      onClick={() => void stashAndSwitch(failedSwitch)}
+      disabled={busy}
+      className="mt-1.5 rounded border border-border-strong px-2 py-1 text-[11px] text-text hover:bg-hover disabled:opacity-40"
+    >
+      Stash and switch to {failedSwitch}
+    </button>
   );
 }
 

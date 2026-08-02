@@ -53,6 +53,13 @@
   --font-sans: var(--font-mono);
 }
 
+/* Preview body text. A variable rather than a token because it is a user
+   setting, rewritten at runtime by the appearance store; the chrome around it
+   keeps the fixed DESIGN.md ladder and moves only with the webview zoom. */
+:root {
+  --preview-font-size: 12px;
+}
+
 /* Panels own their own scrolling, so the window itself never scrolls. */
 html,
 body {
@@ -89,6 +96,13 @@ body {
 
 /* An inset shadow rather than a border: a border would widen the row box and
    shift its content sideways as the glow comes and goes. */
+/* The stand-in for changes hidden inside a collapsed directory: the same edge
+   bar, dimmer and without the background tint, because the row itself did not
+   change — something under it did. */
+.tree-row-glow-proxy {
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--color-glow) 45%, transparent);
+}
+
 .tree-row-glow {
   box-shadow: inset 2px 0 0 var(--color-glow);
   animation: tree-row-glow-fade 3s ease-out forwards;
@@ -112,15 +126,38 @@ body {
   overflow-x: auto;
   background-color: transparent !important;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--preview-font-size);
   line-height: 1.55;
+}
+
+/* Ellipsis at the *start* of the line rather than the end, for the directory
+   half of a feed row: the segments nearest the file are the ones worth
+   keeping when there isn't room for all of them.
+
+   `direction: rtl` moves the overflow edge to the left; `text-align: left`
+   undoes the alignment that comes with it, and the inner `<bdi>` keeps the
+   path itself reading left-to-right instead of being reordered around its
+   separators. */
+.truncate-start {
+  direction: rtl;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Plain-text and diff bodies, which have no wrapper of their own to style. */
+.preview-text {
+  font-size: var(--preview-font-size);
 }
 
 /* Rendered markdown. Prose may use the proportional stack; code stays mono. */
 .markdown-body {
   color: var(--color-text);
   font-family: var(--font-prose);
-  font-size: 13px;
+  /* Prose reads one step above code — DESIGN.md's 13px to the code ladder's
+     12px — so it tracks the setting rather than pinning itself. */
+  font-size: calc(var(--preview-font-size) + 1px);
   line-height: 1.65;
 }
 .markdown-body h1,
@@ -199,7 +236,7 @@ body {
   display: block;
   overflow-x: auto;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--preview-font-size);
 }
 .markdown-body th,
 .markdown-body td {

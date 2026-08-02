@@ -12,6 +12,7 @@ import {
   MIN_FEED_MAX_ENTRIES,
   nextFeedSort,
   presentFeedEntries,
+  splitPath,
   summarizeBatch,
   toggleKindFilter,
 } from "./feed";
@@ -231,5 +232,22 @@ describe("presentFeedEntries", () => {
       "b2",
       "b3",
     ]);
+  });
+});
+
+describe("splitPath", () => {
+  it("splits a nested path into filename and directory", () => {
+    expect(splitPath("src/components/AuthProvider.tsx")).toEqual({
+      name: "AuthProvider.tsx",
+      dir: "src/components",
+    });
+  });
+
+  it("leaves a root-level file with no directory", () => {
+    expect(splitPath("README.md")).toEqual({ name: "README.md", dir: "" });
+  });
+
+  it("splits a directory path the same way", () => {
+    expect(splitPath("src/components")).toEqual({ name: "components", dir: "src" });
   });
 });

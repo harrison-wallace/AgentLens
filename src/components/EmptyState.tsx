@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import logo from "../assets/lens-logo.svg";
 import FolderBrowser from "./FolderBrowser";
 import { getAppInfo } from "../lib/tauri";
 import { useBrowseStore } from "../stores/browseStore";
@@ -36,6 +37,7 @@ export default function EmptyState() {
   return (
     <div className="flex h-full w-full items-center justify-center overflow-y-auto bg-surface py-10">
       <div className="flex w-80 flex-col items-center text-center">
+        <img src={logo} alt="" aria-hidden className="mb-3 h-16 w-16" />
         <p className="text-[22px] font-semibold tracking-wide text-text">AgentLens</p>
         {version && <p className="mt-1 text-[11px] text-text-muted">v{version}</p>}
 

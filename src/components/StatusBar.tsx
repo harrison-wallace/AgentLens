@@ -1,4 +1,5 @@
 import BranchControl from "./BranchControl";
+import { DEFAULT_ZOOM, useAppearanceStore } from "../stores/appearanceStore";
 import { useConnectionStore } from "../stores/connectionStore";
 import { useFeedStore } from "../stores/feedStore";
 import { useGitStore } from "../stores/gitStore";
@@ -57,6 +58,30 @@ function ConnectionChip() {
   );
 }
 
+/**
+ * The zoom level, shown only when it isn't 100%.
+ *
+ * Zoom is easy to nudge by accident and invisible once you've stopped
+ * noticing it — "why is everything huge?" needs an answer on screen. At 100%
+ * there is nothing to explain, so the chip stays out of the footer.
+ */
+function ZoomChip() {
+  const zoom = useAppearanceStore((s) => s.zoom);
+  const resetZoom = useAppearanceStore((s) => s.resetZoom);
+  if (zoom === DEFAULT_ZOOM) return null;
+
+  return (
+    <button
+      type="button"
+      onClick={resetZoom}
+      title="Reset zoom to 100% (Ctrl+0)"
+      className="shrink-0 rounded px-1 tabular-nums hover:bg-hover hover:text-text"
+    >
+      {Math.round(zoom * 100)}%
+    </button>
+  );
+}
+
 export default function StatusBar() {
   const status = useGitStore((s) => s.status);
   const watcher = useWatcherStore((s) => s.status);
@@ -96,6 +121,7 @@ export default function StatusBar() {
         <span className="text-git-deleted">− {sessionTotals.deleted}</span>
       </span>
       <span className="ml-auto flex items-center gap-4 overflow-hidden">
+        <ZoomChip />
         <ConnectionChip />
       </span>
       <span

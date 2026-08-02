@@ -7,24 +7,20 @@ interface PaletteStore {
   files: string[];
   loading: boolean;
   query: string;
-  /** Index into the currently filtered results, not into `files`. */
-  cursor: number;
   show: () => Promise<void>;
   hide: () => void;
   setQuery: (query: string) => void;
-  moveCursor: (delta: number, resultCount: number) => void;
   reset: () => void;
 }
 
-export const usePaletteStore = create<PaletteStore>((set, get) => ({
+export const usePaletteStore = create<PaletteStore>((set) => ({
   open: false,
   files: [],
   loading: false,
   query: "",
-  cursor: 0,
 
   show: async () => {
-    set({ open: true, query: "", cursor: 0, loading: true });
+    set({ open: true, query: "", loading: true });
     try {
       set({ files: await listFiles(), loading: false });
     } catch {
@@ -34,15 +30,7 @@ export const usePaletteStore = create<PaletteStore>((set, get) => ({
 
   hide: () => set({ open: false }),
 
-  // Typing invalidates the previous selection, so the cursor goes back to the
-  // best match rather than to whatever happened to be at that index.
-  setQuery: (query) => set({ query, cursor: 0 }),
+  setQuery: (query) => set({ query }),
 
-  moveCursor: (delta, resultCount) => {
-    if (resultCount === 0) return;
-    const next = (get().cursor + delta + resultCount) % resultCount;
-    set({ cursor: next });
-  },
-
-  reset: () => set({ open: false, files: [], loading: false, query: "", cursor: 0 }),
+  reset: () => set({ open: false, files: [], loading: false, query: "" }),
 }));

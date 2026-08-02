@@ -66,6 +66,21 @@ export function gapLabel(from: number, to: number | null): string {
     : `disconnected ${clockLabel(from)}–${clockLabel(to)}`;
 }
 
+/**
+ * Split a workspace-relative path into the filename and the directory holding
+ * it, so a feed row can lead with the part that identifies the file.
+ *
+ * No trailing-separator case to handle: `resolve_in_workspace` rejects paths
+ * with leading, doubled or trailing separators, so nothing that reaches the
+ * feed has one.
+ */
+export function splitPath(path: string): { name: string; dir: string } {
+  const cut = path.lastIndexOf("/");
+  return cut === -1
+    ? { name: path, dir: "" }
+    : { name: path.slice(cut + 1), dir: path.slice(0, cut) };
+}
+
 export function emptyKindCounts(): KindCounts {
   return { ...EMPTY_COUNTS };
 }

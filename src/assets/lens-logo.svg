@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<!-- "Lens" from SVG Repo (www.svgrepo.com/svg/5427/lens), Camera And
+     Accesories 3 collection, CC0. Geometry unchanged; colours adapted to the
+     AgentLens palette (DESIGN.md): warm dark body, accent-blue glass. -->
+<svg height="800px" width="800px" version="1.1" id="Layer_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+	 viewBox="0 0 464 464" xml:space="preserve">
+<circle style="fill:#3A3535;" cx="232" cy="232" r="197"/>
+<path style="fill:#5C5555;" d="M232,0C103.87,0,0,103.87,0,232s103.87,232,232,232s232-103.87,232-232S360.13,0,232,0z M232,424
+	c-106.039,0-192-85.962-192-192c0-106.039,85.961-192,192-192s192,85.961,192,192C424,338.038,338.039,424,232,424z"/>
+<circle style="fill:#4A4444;" cx="232" cy="232" r="144"/>
+<path style="fill:#2E2A2A;" d="M232,352c-66.172,0-120-53.828-120-120s53.828-120,120-120s120,53.828,120,120S298.172,352,232,352z
+	 M232,128c-57.344,0-104,46.656-104,104s46.656,104,104,104s104-46.656,104-104S289.344,128,232,128z"/>
+<circle style="fill:#0A4FA8;" cx="232" cy="232" r="104"/>
+<circle style="fill:#0060CC;" cx="232" cy="232" r="88"/>
+<circle style="fill:#007AFF;" cx="232" cy="232" r="72"/>
+<circle style="fill:#2A90FF;" cx="232" cy="232" r="56"/>
+<circle style="fill:#0056B3;" cx="232" cy="232" r="40"/>
+<g>
+	<circle style="fill:#FFFFFF;" cx="244" cy="220" r="12"/>
+	<circle style="fill:#FFFFFF;" cx="280" cy="184" r="20"/>
+</g>
+<circle style="fill:#CFE4FF;" cx="184" cy="280" r="16"/>
+</svg>

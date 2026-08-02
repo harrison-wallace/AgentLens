@@ -1,3 +1,4 @@
+import logo from "../assets/lens-logo.svg";
 import { useFeedStore } from "../stores/feedStore";
 import { useGitStore } from "../stores/gitStore";
 import { useLayoutStore } from "../stores/layoutStore";
@@ -43,7 +44,13 @@ export default function WorkspaceHeader() {
 
   return (
     <header className="flex h-10 shrink-0 items-center gap-3 border-b border-border bg-surface-raised px-3">
-      <span className="shrink-0 truncate text-xs font-medium text-text">{workspace.name}</span>
+      {/* The only branding in the workspace shell: a mark, not a wordmark —
+          the header's job is to say which folder you are watching, and the
+          product name is not news to someone already inside the app. */}
+      <span className="flex shrink-0 items-center gap-2">
+        <img src={logo} alt="AgentLens" title="AgentLens" className="h-4 w-4" />
+        <span className="truncate text-xs font-medium text-text">{workspace.name}</span>
+      </span>
       <span className="min-w-0 flex-1 truncate text-[11px] text-text-muted" title={workspace.root}>
         {workspace.root}
       </span>

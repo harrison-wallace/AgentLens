@@ -10,6 +10,8 @@ import Splitter from "./components/Splitter";
 import StatusBar from "./components/StatusBar";
 import WorkspaceHeader from "./components/WorkspaceHeader";
 import { onConnection, onFsChanges, onGitStatus, onWatcherStatus } from "./lib/events";
+import { quickPickOpen } from "./lib/quickPick";
+import { useAppearanceStore } from "./stores/appearanceStore";
 import { useConnectionStore } from "./stores/connectionStore";
 import { useFeedStore } from "./stores/feedStore";
 import { useGitStore } from "./stores/gitStore";
@@ -42,6 +44,9 @@ export default function App() {
     // they load once here rather than in the per-workspace effect below.
     void useSettingsStore.getState().refreshApp();
     void useConnectionStore.getState().refresh();
+    // The webview starts every launch at 100%, so a stored zoom has to be
+    // re-applied rather than merely read.
+    useAppearanceStore.getState().apply();
   }, [restore, loadRecent]);
 
   // Subscribed once for the app's lifetime (not per-workspace) so a
@@ -97,9 +102,12 @@ export default function App() {
     };
   }, []);
 
-  // Global chrome keys: `Ctrl+P` file jump, `F11` native fullscreen.
-  // Fullscreen is not free in a Tauri window the way it is in a browser tab —
-  // the webview never owns the shell, so the app has to call the window API.
+  // Global chrome keys: `Ctrl+P` file jump, `F11` native fullscreen,
+  // `Ctrl +/-/0` zoom. Fullscreen is not free in a Tauri window the way it is
+  // in a browser tab — the webview never owns the shell, so the app has to
+  // call the window API. Zoom is handled here rather than by Tauri's
+  // `zoomHotkeysEnabled` polyfill, which has no reset, no persistence, and
+  // would fight this handler for the same keys.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "F11") {
@@ -111,10 +119,32 @@ export default function App() {
         })();
         return;
       }
-      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "p") return;
+      if (!(event.ctrlKey || event.metaKey)) return;
+
+      // `+` and `_` are the shifted forms of the same two keys, and both
+      // reach here from a keyboard where the unshifted press doesn't.
+      const appearance = useAppearanceStore.getState();
+      if (event.key === "=" || event.key === "+") {
+        event.preventDefault();
+        appearance.zoomIn();
+        return;
+      }
+      if (event.key === "-" || event.key === "_") {
+        event.preventDefault();
+        appearance.zoomOut();
+        return;
+      }
+      if (event.key === "0") {
+        event.preventDefault();
+        appearance.resetZoom();
+        return;
+      }
+
+      if (event.key.toLowerCase() !== "p") return;
       // Don't stack the palette on top of another modal, or re-open (and so
-      // reset) the one already showing.
-      if (useSettingsStore.getState().open || usePaletteStore.getState().open) return;
+      // reset) the one already showing — including the branch picker, which
+      // is the same widget.
+      if (useSettingsStore.getState().open || quickPickOpen()) return;
       event.preventDefault();
       void usePaletteStore.getState().show();
     };

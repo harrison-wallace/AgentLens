@@ -140,4 +140,83 @@ describe("gitStore", () => {
     // or it flashes an unavailable notice on every workspace open.
     expect(useGitStore.getState().capabilities).toBeNull();
   });
+  it("remembers the branch a failed switch was aiming at, so the error can offer a fix", async () => {
+    const { gitSwitchBranch } = await import("../lib/tauri");
+    vi.mocked(gitSwitchBranch).mockRejectedValueOnce(
+      new Error("local changes would be overwritten"),
+    );
+
+    expect(await useGitStore.getState().switchBranch("feature")).toBe(false);
+    expect(useGitStore.getState().failedSwitch).toBe("feature");
+
+    // Any other attempt withdraws the offer along with the error.
+    await useGitStore.getState().stage(["a.rs"]);
+    expect(useGitStore.getState().failedSwitch).toBeNull();
+  });
+
+  it("stashes, switches, and re-reads the branch list", async () => {
+    const { gitStashPush, gitSwitchBranch, gitStashPop, gitBranches } =
+      await import("../lib/tauri");
+    vi.mocked(gitStashPush).mockImplementationOnce(async () => {
+      calls.push("stash");
+      return EMPTY;
+    });
+    vi.mocked(gitSwitchBranch).mockImplementationOnce(async () => {
+      calls.push("switch");
+      return EMPTY;
+    });
+    vi.mocked(gitBranches).mockResolvedValueOnce({
+      current: "feature",
+      branches: ["main", "feature"],
+    });
+
+    expect(await useGitStore.getState().stashAndSwitch("feature")).toBe(true);
+    expect(calls).toEqual(["stash", "switch"]);
+    expect(vi.mocked(gitStashPop)).not.toHaveBeenCalled();
+    expect(useGitStore.getState().branches?.current).toBe("feature");
+  });
+
+  it("puts the work back, and says why, when stashing did not unblock the switch", async () => {
+    const { gitStashPush, gitSwitchBranch, gitStashPop } = await import("../lib/tauri");
+    vi.mocked(gitStashPush).mockImplementationOnce(async () => {
+      calls.push("stash");
+      return EMPTY;
+    });
+    vi.mocked(gitSwitchBranch).mockImplementationOnce(async () => {
+      calls.push("switch");
+      throw new Error("no such branch");
+    });
+    vi.mocked(gitStashPop).mockImplementationOnce(async () => {
+      calls.push("pop");
+      return EMPTY;
+    });
+
+    expect(await useGitStore.getState().stashAndSwitch("nope")).toBe(false);
+    // The tree is restored rather than left parked in a stash nobody asked for.
+    expect(calls).toEqual(["stash", "switch", "pop"]);
+    // Popping is a successful mutation, which would otherwise clear the very
+    // failure that explains the pop.
+    expect(useGitStore.getState().error).toBe("no such branch");
+  });
+
+  it("keeps the pop error when putting the work back fails", async () => {
+    const { gitStashPush, gitSwitchBranch, gitStashPop } = await import("../lib/tauri");
+    vi.mocked(gitStashPush).mockResolvedValueOnce(EMPTY);
+    vi.mocked(gitSwitchBranch).mockRejectedValueOnce(new Error("no such branch"));
+    vi.mocked(gitStashPop).mockRejectedValueOnce(new Error("conflict on pop"));
+
+    expect(await useGitStore.getState().stashAndSwitch("nope")).toBe(false);
+    // The switch failure is secondary: the tree is not restored, and that is
+    // the problem the user has to fix first.
+    expect(useGitStore.getState().error).toBe("conflict on pop");
+  });
+
+  it("does not stash when the stash itself fails", async () => {
+    const { gitStashPush, gitSwitchBranch } = await import("../lib/tauri");
+    vi.mocked(gitStashPush).mockRejectedValueOnce(new Error("cannot stash"));
+
+    expect(await useGitStore.getState().stashAndSwitch("feature")).toBe(false);
+    expect(vi.mocked(gitSwitchBranch)).not.toHaveBeenCalled();
+    expect(useGitStore.getState().error).toBe("cannot stash");
+  });
 });

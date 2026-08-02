@@ -68,6 +68,43 @@ export function gitBadgeFor(
   return kind ? BADGES[kind] : null;
 }
 
+/**
+ * Roll decorations sitting on paths the tree isn't rendering up onto the rows
+ * that stand in for them, counted per stand-in.
+ *
+ * A change inside a collapsed directory has no row of its own, so it is shown
+ * nowhere at all — which is the default state of any real repo. The honest
+ * place for it is the deepest row that *is* rendered and contains it: expand
+ * that row and the decoration walks down towards the file, until at full
+ * expansion the file's own row carries it and this returns nothing.
+ *
+ * Paths with a row of their own are skipped rather than counted: they already
+ * show their own decoration, and charging them to an ancestor as well would
+ * report the same change twice.
+ */
+export function rollUpHidden(
+  paths: Iterable<string>,
+  visible: ReadonlySet<string>,
+): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const path of paths) {
+    if (visible.has(path)) continue;
+    // Walk up until a rendered ancestor turns up. A path with no rendered
+    // ancestor at all (the root's own children, before the root has loaded)
+    // has nowhere to be shown and is dropped.
+    let cut = path.lastIndexOf("/");
+    while (cut !== -1) {
+      const ancestor = path.slice(0, cut);
+      if (visible.has(ancestor)) {
+        counts[ancestor] = (counts[ancestor] ?? 0) + 1;
+        break;
+      }
+      cut = ancestor.lastIndexOf("/");
+    }
+  }
+  return counts;
+}
+
 export interface GitCounts {
   modified: number;
   added: number;
