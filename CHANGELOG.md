@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-02
+
+Three bugs that between them made a first remote connection to a machine with
+an older daemon on it fail in three different confusing ways.
+
+### Fixed
+
+- **A command the daemon didn't recognise hung for thirty seconds instead of
+  failing.** Deserializing a request fails as a unit, so an unknown command
+  took the request's id down with it and the reply came back against id 0 —
+  which nobody was waiting for. The app then waited out its full timeout for
+  an answer it had already been sent. The id is now recovered before the
+  command is parsed. This is what made `docs/PROTOCOL.md`'s promise that new
+  commands are a safe additive change actually true; it wasn't.
+- **A daemon of the wrong version was preferred over installing the right
+  one.** The bootstrap ran the first executable it found, so a copy left in
+  `~/.local/bin` by an earlier release won every connection from then on — and
+  because finding it counted as success, the correct version was never
+  installed. Worse, it looked fine: an older daemon speaks the same protocol,
+  so it hand-shakes happily and only fails on the first newer command.
+  Candidates outside the directory AgentLens manages now have to match the
+  app's version before they are run.
+- **Opening a workspace with a blank path used the wrong directory.** It
+  resolved to the backend process's working directory, which for a daemon is
+  wherever the thing that spawned it happened to be — not the home directory
+  the UI promises. Blank now means home on whichever machine the backend is.
+- **Opening a filesystem root took the app down with it.** The watcher
+  registers one OS watch per directory, so `/` meant walking every
+  pseudo-filesystem on the machine and exhausting the kernel's watch limit. A
+  root is now refused with an explanation; it was never a project.
+
 ## [0.2.0] - 2026-08-02
 
 Remote machines now set themselves up, and you can browse them to find the

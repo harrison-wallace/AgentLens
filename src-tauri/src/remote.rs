@@ -78,15 +78,26 @@ impl Platform {
 /// `exec` rather than a plain call so the daemon replaces this shell and owns
 /// the stdio it was handed; an intermediate `sh` would sit between the app and
 /// the protocol stream and swallow the EOF that means "shut down".
+///
+/// A daemon found anywhere but the managed directory has to *prove its
+/// version* before it is run. It is not enough that it starts: a daemon from
+/// an older release speaks the same protocol but knows fewer commands, so it
+/// hand-shakes happily and then fails the first time the app asks for
+/// something it has never heard of. A version left lying in `~/.local/bin`
+/// would otherwise win over the correct one forever, because finding it stops
+/// the app installing the one it actually wants.
 pub fn bootstrap(version: &str) -> String {
     format!(
         r#"V={version}
 D="$HOME/{root}/$V/agentlens-daemon"
 if [ -x "$D" ]; then exec "$D" --stdio; fi
+matches() {{ "$1" --version 2>/dev/null | grep -qF " $V "; }}
 for d in "$HOME/.local/bin/agentlens-daemon" /usr/local/bin/agentlens-daemon /usr/bin/agentlens-daemon; do
-  if [ -x "$d" ]; then exec "$d" --stdio; fi
+  if [ -x "$d" ] && matches "$d"; then exec "$d" --stdio; fi
 done
-if command -v agentlens-daemon >/dev/null 2>&1; then exec agentlens-daemon --stdio; fi
+if command -v agentlens-daemon >/dev/null 2>&1 && matches agentlens-daemon; then
+  exec agentlens-daemon --stdio
+fi
 echo "{marker} $(uname -s) $(uname -m)" >&2
 exit 127
 "#,
@@ -202,10 +213,12 @@ pub fn parse_location(location: &str) -> (ConnectionTarget, String) {
         if let Some(rest) = location.strip_prefix(scheme) {
             let (name, path) = match rest.find('/') {
                 Some(at) => (&rest[..at], &rest[at..]),
-                // No path at all: the home directory is the sensible root, and
-                // the daemon canonicalizes `~` for us via the shell it isn't
-                // using — so send `.` and let it resolve the login directory.
-                None => (rest, "."),
+                // No path at all means the home directory, and the backend
+                // resolves an empty path to exactly that. Sending `.` instead
+                // would resolve to the *process's* working directory, which
+                // for a daemon is wherever the thing that spawned it happened
+                // to be.
+                None => (rest, ""),
             };
             return (build(name.to_string()), path.to_string());
         }
@@ -444,7 +457,7 @@ mod tests {
     fn a_host_with_no_path_resolves_to_the_login_directory() {
         assert_eq!(
             parse_location("ssh://build-box"),
-            (ssh("build-box"), ".".to_string())
+            (ssh("build-box"), String::new())
         );
     }
 
@@ -581,12 +594,22 @@ mod tests {
             .expect("sh must be runnable")
     }
 
-    /// A stand-in daemon that announces which copy of itself ran.
+    /// A stand-in daemon that announces which copy of itself ran, and answers
+    /// `--version` the way the real one does — which the bootstrap checks
+    /// before it will run anything outside the directory it manages.
     #[cfg(unix)]
-    fn stub_daemon(at: &std::path::Path, label: &str) {
+    fn stub_daemon(at: &std::path::Path, label: &str, version: &str) {
         use std::os::unix::fs::PermissionsExt;
         std::fs::create_dir_all(at.parent().unwrap()).unwrap();
-        std::fs::write(at, format!("#!/bin/sh\necho '{label}' \"$@\"\n")).unwrap();
+        std::fs::write(
+            at,
+            format!(
+                "#!/bin/sh\n\
+                 if [ \"$1\" = \"--version\" ]; then echo 'agentlens-daemon {version} (protocol 1)'; exit 0; fi\n\
+                 echo '{label}' \"$@\"\n"
+            ),
+        )
+        .unwrap();
         std::fs::set_permissions(at, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
@@ -597,6 +620,7 @@ mod tests {
         stub_daemon(
             &home.path().join(".local/bin/agentlens-daemon"),
             "manual-install",
+            "0.1.0",
         );
 
         let out = run_bootstrap(home.path(), "0.1.0");
@@ -615,10 +639,15 @@ mod tests {
         // app installed, or an upgrade would silently keep talking to the
         // previous protocol.
         let home = tempfile::tempdir().unwrap();
-        stub_daemon(&home.path().join(".local/bin/agentlens-daemon"), "manual");
+        stub_daemon(
+            &home.path().join(".local/bin/agentlens-daemon"),
+            "manual",
+            "0.1.0",
+        );
         stub_daemon(
             &home.path().join(".agentlens/bin/0.1.0/agentlens-daemon"),
             "managed",
+            "0.1.0",
         );
 
         let out = run_bootstrap(home.path(), "0.1.0");
@@ -636,12 +665,37 @@ mod tests {
         stub_daemon(
             &home.path().join(".agentlens/bin/0.0.9/agentlens-daemon"),
             "stale",
+            "0.0.9",
         );
 
         let out = run_bootstrap(home.path(), "0.1.0");
 
         assert_eq!(out.status.code(), Some(127));
         assert!(parse_not_installed(&String::from_utf8_lossy(&out.stderr)).is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_hand_installed_daemon_of_the_wrong_version_is_not_run() {
+        // The failure this prevents is nasty because it looks like success: an
+        // older daemon speaks the same protocol, so it hand-shakes fine and
+        // then does not recognise the first newer command it is asked for.
+        // Worse, finding it stops the app installing the version it wanted, so
+        // the wrong one wins every connection from then on.
+        let home = tempfile::tempdir().unwrap();
+        stub_daemon(
+            &home.path().join(".local/bin/agentlens-daemon"),
+            "stale",
+            "0.1.0",
+        );
+
+        let out = run_bootstrap(home.path(), "0.2.0");
+
+        assert_eq!(out.status.code(), Some(127), "{:?}", out);
+        assert!(
+            parse_not_installed(&String::from_utf8_lossy(&out.stderr)).is_some(),
+            "a mismatch must report as not-installed so the right one gets installed"
+        );
     }
 
     #[cfg(unix)]
@@ -674,7 +728,11 @@ mod tests {
         let dud = home.path().join(".agentlens/bin/0.1.0/agentlens-daemon");
         std::fs::create_dir_all(dud.parent().unwrap()).unwrap();
         std::fs::write(&dud, "not executable").unwrap();
-        stub_daemon(&home.path().join(".local/bin/agentlens-daemon"), "fallback");
+        stub_daemon(
+            &home.path().join(".local/bin/agentlens-daemon"),
+            "fallback",
+            "0.1.0",
+        );
 
         let out = run_bootstrap(home.path(), "0.1.0");
 

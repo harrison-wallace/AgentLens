@@ -133,32 +133,45 @@ fn serve() {
 /// Kept pure — it takes text and returns a frame — because framing bugs are
 /// the subtle kind: a partial line, an unexpected shape, an id that isn't
 /// echoed back leaves the app waiting for a reply that never comes.
+///
+/// Parsed in two stages, and that is the whole point of it. An app newer than
+/// this daemon will send commands it has never heard of, and deserializing the
+/// frame as a unit fails *as a unit* — taking the id with it. Answering id 0
+/// then leaves the caller waiting out its timeout for a reply it was sent but
+/// cannot recognise, which is how "I don't know that command" became a
+/// thirty-second hang. The id is recovered first so the answer can be
+/// delivered, whatever is wrong with the rest.
 fn respond(engine: &Engine, line: &str) -> Frame {
-    match serde_json::from_str::<Frame>(line) {
+    let value: Value = match serde_json::from_str(line) {
+        Ok(value) => value,
+        // Not even JSON, so there is no id to be had.
+        Err(err) => return refuse(0, format!("unreadable frame: {err}")),
+    };
+    let id = value.get("id").and_then(Value::as_u64).unwrap_or(0);
+
+    match serde_json::from_value::<Frame>(value) {
         Ok(Frame::Request { id, command }) => match engine.handle(command) {
             Ok(result) => Frame::Response {
                 id,
                 result: Some(result),
                 error: None,
             },
-            Err(error) => Frame::Response {
-                id,
-                result: None,
-                error: Some(error),
-            },
+            Err(error) => refuse(id, error),
         },
-        // Responses and events travel the other way. Answering id 0 rather
-        // than staying silent means a confused client still gets told.
-        Ok(_) => Frame::Response {
-            id: 0,
-            result: None,
-            error: Some("only request frames may be sent to the daemon".to_string()),
-        },
-        Err(err) => Frame::Response {
-            id: 0,
-            result: None,
-            error: Some(format!("unreadable frame: {err}")),
-        },
+        // Responses and events travel the other way.
+        Ok(_) => refuse(
+            id,
+            "only request frames may be sent to the daemon".to_string(),
+        ),
+        Err(err) => refuse(id, format!("unreadable frame: {err}")),
+    }
+}
+
+fn refuse(id: u64, error: String) -> Frame {
+    Frame::Response {
+        id,
+        result: None,
+        error: Some(error),
     }
 }
 
@@ -298,6 +311,35 @@ mod tests {
                 }
                 other => panic!("expected a response, got {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn a_command_this_daemon_has_never_heard_of_still_answers_its_caller() {
+        // An app newer than the daemon. Answering id 0 here — which is what
+        // deserializing the frame as a unit produces — leaves the caller
+        // waiting out its timeout, so a missing feature reads as a hang.
+        let request = r#"{"type":"request","id":7,"command":{"cmd":"somethingNewer"}}"#;
+
+        match respond(&engine(), request) {
+            Frame::Response { id, error, .. } => {
+                assert_eq!(id, 7, "the id must survive an unparseable command");
+                assert!(error.unwrap().contains("unknown variant"));
+            }
+            other => panic!("expected a response, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_malformed_field_inside_a_known_command_also_keeps_its_id() {
+        let request = r#"{"type":"request","id":9,"command":{"cmd":"listDir","path":42}}"#;
+
+        match respond(&engine(), request) {
+            Frame::Response { id, error, .. } => {
+                assert_eq!(id, 9);
+                assert!(error.is_some());
+            }
+            other => panic!("expected a response, got {other:?}"),
         }
     }
 

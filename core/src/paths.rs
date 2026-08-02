@@ -13,6 +13,20 @@ use std::path::{Path, PathBuf};
 /// Windows `canonicalize` returns extended-length paths (`\\?\C:\...`), which
 /// are correct for filesystem calls but wrong to show a user, so the prefix is
 /// stripped here.
+/// The current user's home directory on this machine.
+///
+/// Used as the starting point whenever a path was not given — the folder
+/// picker's first listing, and a workspace opened with a blank path. Falling
+/// back to the process's *working* directory instead was the obvious shortcut
+/// and the wrong one: a daemon's cwd is whatever the thing that spawned it
+/// happened to be in, which for an SSH session is a promise nobody made.
+pub fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .filter(|home| home.is_dir())
+}
+
 pub fn normalize_absolute(path: &Path) -> String {
     let text = path.to_string_lossy().replace('\\', "/");
     if let Some(rest) = text.strip_prefix("//?/UNC/") {

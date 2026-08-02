@@ -77,12 +77,10 @@ pub fn list(path: Option<&str>) -> CommandResult<BrowseListing> {
     })
 }
 
-/// The directory a listing starts from when nothing else is asked for.
+/// The directory a listing starts from when nothing else is asked for. The
+/// filesystem root is the last resort — a picker has to open on *something*.
 fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-        .filter(|home| home.is_dir())
+    crate::paths::home_dir()
         .or_else(|| Some(Path::new("/").to_path_buf()).filter(|root| root.is_dir()))
 }
 

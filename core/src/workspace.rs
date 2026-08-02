@@ -46,14 +46,37 @@ pub fn now_millis() -> i64 {
         .unwrap_or(0)
 }
 
-/// Open `path` as the workspace: canonicalize, verify it's a directory, and
-/// replace whatever was previously open.
+/// Open `path` as the workspace: canonicalize, verify it's a usable directory,
+/// and replace whatever was previously open.
+///
+/// An empty path means the user's home directory, which is what "leave it
+/// blank" is documented to do. It used to mean the *process's* working
+/// directory, which for a daemon is wherever the thing that spawned it
+/// happened to be — an answer that depends on how you were reached rather than
+/// on anything the user asked for.
 pub fn open(state: &WorkspaceState, path: &Path) -> Result<Workspace, String> {
-    let canonical = path
+    let requested = if path.as_os_str().is_empty() || path == Path::new(".") {
+        crate::paths::home_dir().ok_or("this machine has no home directory to open")?
+    } else {
+        path.to_path_buf()
+    };
+
+    let canonical = requested
         .canonicalize()
         .map_err(|e| format!("failed to open workspace: {e}"))?;
     if !canonical.is_dir() {
         return Err("workspace path is not a directory".to_string());
+    }
+    // A filesystem root is never a project, and treating one as a workspace is
+    // not merely useless: the watcher registers a watch per directory, so `/`
+    // means walking every pseudo-filesystem on the machine and exhausting the
+    // kernel's watch limit long before it finishes.
+    if canonical.parent().is_none() {
+        return Err(format!(
+            "{} is the root of the filesystem, which is too large to watch. \
+             Open a project directory instead.",
+            canonical.display()
+        ));
     }
     let name = canonical
         .file_name()
@@ -131,6 +154,32 @@ mod tests {
 
         assert!(open(&state, &file).is_err());
         assert!(open(&state, &dir.path().join("nope")).is_err());
+    }
+
+    #[test]
+    fn refuses_the_filesystem_root_rather_than_trying_to_watch_it() {
+        // The watcher takes one OS watch per directory, so `/` exhausts the
+        // kernel's limit somewhere inside /proc and takes the app with it.
+        let state = WorkspaceState::default();
+
+        let err = open(&state, Path::new("/")).unwrap_err();
+
+        assert!(err.contains("root of the filesystem"), "{err}");
+        assert!(current_opt(&state).unwrap().is_none());
+    }
+
+    #[test]
+    fn an_empty_path_opens_the_home_directory_not_the_working_one() {
+        // "Leave it blank for your home directory" has to mean that wherever
+        // the backend is, and a daemon's cwd is whatever spawned it.
+        let state = WorkspaceState::default();
+
+        let opened = open(&state, Path::new("")).unwrap();
+
+        assert_eq!(
+            opened.root,
+            crate::paths::home_dir().unwrap().canonicalize().unwrap()
+        );
     }
 
     #[test]
