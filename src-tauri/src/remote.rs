@@ -132,15 +132,21 @@ pub fn parse_not_installed(stderr: &str) -> Option<Platform> {
 /// publishes one. A release without it still installs (the transport is HTTPS
 /// to GitHub, and the handshake immediately afterwards proves the binary is
 /// the right version), but says so on stderr rather than pretending.
+///
+/// Variable names are `al_*` on purpose: WSL imports the Windows environment
+/// into Linux processes, and names like `TMP` / `TEMP` are already set to
+/// Windows paths. Reusing them made a mangled install script look like
+/// "mkdir: cannot create directory ''".
 pub fn install_script(version: &str, asset: &str) -> String {
     format!(
-        r#"V={version}
-DIR="$HOME/{root}/$V"
-TMP="$DIR/.download.$$"
-ASSET={asset}
-BASE={releases}/v$V
-if ! mkdir -p "$DIR"; then echo "agentlens-install: cannot create $DIR" >&2; exit 1; fi
-trap 'rm -f "$TMP" "$TMP.sums"' EXIT
+        r#"al_ver='{version}'
+if [ -z "$HOME" ]; then echo "agentlens-install: HOME is unset; cannot install" >&2; exit 1; fi
+al_dir="$HOME/{root}/$al_ver"
+al_tmp="$al_dir/.download.$$"
+al_asset='{asset}'
+al_base='{releases}/v'"$al_ver"
+if ! mkdir -p "$al_dir"; then echo "agentlens-install: cannot create $al_dir" >&2; exit 1; fi
+trap 'rm -f "$al_tmp" "$al_tmp.sums"' EXIT
 # Bounded, because a download that hangs forever hangs the app behind it.
 if command -v curl >/dev/null 2>&1; then
   fetch() {{ curl -fsSL --max-time 300 "$1" -o "$2"; }}
@@ -150,31 +156,33 @@ else
   echo "agentlens-install: neither curl nor wget is available" >&2
   exit 1
 fi
-if ! fetch "$BASE/$ASSET" "$TMP"; then
-  echo "agentlens-install: could not download $BASE/$ASSET" >&2
+if ! fetch "$al_base/$al_asset" "$al_tmp"; then
+  echo "agentlens-install: could not download $al_base/$al_asset" >&2
   exit 1
 fi
-if fetch "$BASE/SHA256SUMS" "$TMP.sums" 2>/dev/null; then
-  want=$(grep " $ASSET$" "$TMP.sums" | cut -d' ' -f1)
-  if command -v sha256sum >/dev/null 2>&1; then got=$(sha256sum "$TMP" | cut -d' ' -f1)
-  elif command -v shasum >/dev/null 2>&1; then got=$(shasum -a 256 "$TMP" | cut -d' ' -f1)
+if fetch "$al_base/SHA256SUMS" "$al_tmp.sums" 2>/dev/null; then
+  # Fixed-string match; avoid `" $ASSET$"` where the trailing `$` is easy to
+  # mis-parse when the script has been through a Windows command line.
+  want=$(grep -F " $al_asset" "$al_tmp.sums" | head -n1 | cut -d' ' -f1)
+  if command -v sha256sum >/dev/null 2>&1; then got=$(sha256sum "$al_tmp" | cut -d' ' -f1)
+  elif command -v shasum >/dev/null 2>&1; then got=$(shasum -a 256 "$al_tmp" | cut -d' ' -f1)
   else got=""; fi
   if [ -n "$want" ] && [ -n "$got" ] && [ "$want" != "$got" ]; then
-    echo "agentlens-install: checksum mismatch for $ASSET" >&2
+    echo "agentlens-install: checksum mismatch for $al_asset" >&2
     exit 1
   fi
 else
   echo "agentlens-install: this release publishes no SHA256SUMS; skipping checksum" >&2
 fi
-chmod +x "$TMP" || exit 1
-mv -f "$TMP" "$DIR/agentlens-daemon" || exit 1
+chmod +x "$al_tmp" || exit 1
+mv -f "$al_tmp" "$al_dir/agentlens-daemon" || exit 1
 # Old versions are dead weight the moment this one works. Confined to our own
 # directory, and never the version just installed.
 for old in "$HOME/{root}"/*; do
-  case "$old" in "$DIR") continue;; esac
+  case "$old" in "$al_dir") continue;; esac
   [ -d "$old" ] && rm -rf "$old"
 done
-exec "$DIR/agentlens-daemon" --version
+exec "$al_dir/agentlens-daemon" --version
 "#,
         version = version,
         root = INSTALL_ROOT,
@@ -270,15 +278,21 @@ pub fn install_spec(
 
 /// Run `script` under `/bin/sh` on the far side.
 ///
-/// The two transports differ only in how the argv survives the trip: `wsl.exe`
-/// passes everything after `--` through untouched, while `ssh` concatenates its
-/// trailing arguments and hands the result to the *remote shell* — so that one
-/// has to be quoted or a script full of spaces and quotes arrives shredded.
+/// The script is always [pack_script]'d (base64) before it crosses the
+/// process boundary. A multi-line `sh -c` body full of `$HOME` / `"…"` is
+/// fragile on Windows→WSL: empty expansions of `DIR`/`TMP`/`ASSET` produced
+/// install failures like `mkdir: cannot create directory ''` and
+/// `grep: ".sums"`. The packed form is one line with no `$` for anything
+/// intermediate to expand.
+///
+/// SSH still needs an extra layer of quoting because `ssh host cmd` joins
+/// `cmd` for the *remote* login shell; WSL gets argv after `--` as-is.
 fn remote_shell(target: &ConnectionTarget, script: &str) -> Option<(String, Vec<String>)> {
+    let packed = pack_script(script);
     match target {
         ConnectionTarget::Local => None,
         // `--` also ends wsl.exe's own option parsing, so nothing in the
-        // script can be mistaken for a wsl flag.
+        // payload can be mistaken for a wsl flag.
         ConnectionTarget::Wsl { distro } => (!is_option_like(distro)).then(|| {
             (
                 "wsl.exe".to_string(),
@@ -288,17 +302,51 @@ fn remote_shell(target: &ConnectionTarget, script: &str) -> Option<(String, Vec<
                     "--".to_string(),
                     "sh".to_string(),
                     "-c".to_string(),
-                    script.to_string(),
+                    packed,
                 ],
             )
         }),
         ConnectionTarget::Ssh { host } => (!is_option_like(host)).then(|| {
             (
                 "ssh".to_string(),
-                vec![host.clone(), format!("sh -c {}", shell_quote(script))],
+                vec![host.clone(), format!("sh -c {}", shell_quote(&packed))],
             )
         }),
     }
+}
+
+/// Base64-wrap `script` so it reaches a remote `sh` with `$` and quotes intact.
+///
+/// `printf '%s' '…' | base64 -d | sh` is one line; the alphabet has no `'`, so
+/// single-quoting the payload is safe. GNU coreutils and busybox both accept
+/// `base64 -d`.
+fn pack_script(script: &str) -> String {
+    let b64 = base64_encode(script.as_bytes());
+    format!("printf '%s' '{b64}' | base64 -d | sh")
+}
+
+fn base64_encode(input: &[u8]) -> String {
+    const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let b0 = u32::from(chunk[0]);
+        let b1 = u32::from(chunk.get(1).copied().unwrap_or(0));
+        let b2 = u32::from(chunk.get(2).copied().unwrap_or(0));
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[((n >> 18) & 63) as usize] as char);
+        out.push(TABLE[((n >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            TABLE[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[(n & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
 }
 
 /// True for a name that the program being spawned would parse as one of its
@@ -466,34 +514,48 @@ mod tests {
         let (program, args) = spawn_spec(&wsl("Ubuntu-22.04"), "", "0.1.0").unwrap();
         assert_eq!(program, "wsl.exe");
         assert_eq!(args[..5], ["-d", "Ubuntu-22.04", "--", "sh", "-c"]);
-        // Passed through untouched by wsl.exe, so the script needs no quoting.
-        assert_eq!(args[5], bootstrap("0.1.0"));
+        // Packed so `$HOME` etc. never sit in the Windows→WSL command line.
+        assert_eq!(args[5], pack_script(&bootstrap("0.1.0")));
+        assert!(args[5].contains("base64 -d"), "{}", args[5]);
     }
 
     #[test]
-    fn ssh_quotes_the_whole_script_for_the_remote_shell() {
+    fn ssh_quotes_the_packed_script_for_the_remote_shell() {
         let (program, args) = spawn_spec(&ssh("box"), "", "0.1.0").unwrap();
         assert_eq!(program, "ssh");
         assert_eq!(args[0], "box");
         assert_eq!(
             args[1],
-            format!("sh -c {}", shell_quote(&bootstrap("0.1.0")))
+            format!("sh -c {}", shell_quote(&pack_script(&bootstrap("0.1.0"))))
         );
     }
 
     #[test]
     fn an_explicit_daemon_command_is_run_verbatim() {
         // The escape hatch has to stay literal: it is what rescues anything
-        // the bootstrap can't cope with.
+        // the bootstrap can't cope with. Still packed for the same transport
+        // reasons as the bootstrap.
         let (_, args) =
             spawn_spec(&ssh("box"), "/opt/my daemons/agentlens-daemon", "0.1.0").unwrap();
-        assert_eq!(
-            args[1],
-            r#"sh -c 'exec '\''/opt/my daemons/agentlens-daemon'\'' --stdio'"#
-        );
+        let inner = pack_script("exec '/opt/my daemons/agentlens-daemon' --stdio");
+        assert_eq!(args[1], format!("sh -c {}", shell_quote(&inner)));
 
         let (_, args) = spawn_spec(&wsl("Ubuntu"), "/opt/daemon", "0.1.0").unwrap();
-        assert_eq!(args[5], "exec '/opt/daemon' --stdio");
+        assert_eq!(args[5], pack_script("exec '/opt/daemon' --stdio"));
+    }
+
+    #[test]
+    fn pack_script_round_trips_through_base64_and_preserves_dollars() {
+        // The failure mode we are fixing: a script full of `$HOME` must still
+        // mean `$HOME` after it has crossed into a remote `sh`.
+        let script = r#"echo "HOME=$HOME"; echo ok"#;
+        let packed = pack_script(script);
+        assert!(packed.starts_with("printf '%s' '"));
+        assert!(packed.ends_with("' | base64 -d | sh"));
+        assert!(
+            !packed.contains("$HOME"),
+            "payload must not leak into the wrapper: {packed}"
+        );
     }
 
     #[test]
@@ -746,13 +808,13 @@ mod tests {
     fn the_installer_downloads_verifies_and_replaces_atomically() {
         let script = install_script("0.1.0", "agentlens-daemon-linux-x86_64");
 
-        assert!(script.contains("releases/download/v$V"), "{script}");
+        assert!(script.contains("releases/download/v"), "{script}");
         assert!(script.contains("SHA256SUMS"), "{script}");
         assert!(script.contains("checksum mismatch"), "{script}");
         // Downloaded beside the target and renamed, never written in place —
         // replacing a running binary is how you earn ETXTBSY.
         assert!(
-            script.contains(r#"mv -f "$TMP" "$DIR/agentlens-daemon""#),
+            script.contains(r#"mv -f "$al_tmp" "$al_dir/agentlens-daemon""#),
             "{script}"
         );
         // Neither curl nor wget is a real possibility on a minimal image.
@@ -762,6 +824,9 @@ mod tests {
             script.contains(r#"for old in "$HOME/.agentlens/bin"/*"#),
             "{script}"
         );
+        // Must not reuse Windows-imported names (TMP/TEMP/DIR).
+        assert!(!script.contains("TMP="), "{script}");
+        assert!(!script.contains("$TMP"), "{script}");
     }
 
     #[test]

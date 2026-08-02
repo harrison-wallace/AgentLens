@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-08-02
+
+### Fixed
+
+- **WSL/SSH auto-install of the daemon no longer dies with empty paths**
+  (`mkdir: cannot create directory ''`, `grep: ".sums"`, empty `sha256sum`).
+  Multi-line install/bootstrap scripts are base64-packed before they cross
+  `wsl.exe` / `ssh`, so `$HOME` / `$TMP` are not expanded or stripped on the
+  Windows side; install vars use `al_*` names to avoid Windows-imported `TMP`.
+  Affects every Linux WSL distro and SSH host, not only Debian.
+
 ## [0.5.0] - 2026-08-02
 
 VS Code-style preview tabs so several files stay open while watching an agent.
