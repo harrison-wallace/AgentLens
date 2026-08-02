@@ -7,7 +7,9 @@ import {
   setWorkspaceSettings,
   workspaceSettings,
 } from "../lib/tauri";
+import { clampFeedMaxEntries, DEFAULT_FEED_MAX_ENTRIES } from "../lib/feed";
 import type { AgentRootInfo, AppSettings, PinnedEntry, WorkspaceSettings } from "../lib/protocol";
+import { useFeedStore } from "./feedStore";
 import { useTreeStore } from "./treeStore";
 
 function toErrorMessage(err: unknown): string {
@@ -21,7 +23,17 @@ const EMPTY_APP: AppSettings = {
   agentRoots: [],
   daemonCommand: "agentlens-daemon",
   autoInstallDaemon: true,
+  feedMaxEntries: DEFAULT_FEED_MAX_ENTRIES,
 };
+
+/** Normalize app settings from disk (older stores may omit new fields). */
+function normalizeApp(value: AppSettings): AppSettings {
+  return {
+    ...EMPTY_APP,
+    ...value,
+    feedMaxEntries: clampFeedMaxEntries(value.feedMaxEntries ?? DEFAULT_FEED_MAX_ENTRIES),
+  };
+}
 
 interface SettingsStore {
   /** Scoped to the open workspace. */
@@ -52,6 +64,8 @@ interface SettingsStore {
   setDaemonCommand: (command: string) => Promise<boolean>;
   /** Flips whether a remote without a daemon gets one installed for it. */
   toggleAutoInstallDaemon: () => Promise<boolean>;
+  /** How many activity-feed batches to keep (oldest drop). App-wide. */
+  setFeedMaxEntries: (max: number) => Promise<boolean>;
   /** Pins `path` if it isn't already, unpins it if it is. */
   togglePin: (path: string) => Promise<boolean>;
   isPinned: (path: string) => boolean;
@@ -128,9 +142,12 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   refreshApp: async () => {
     try {
-      set({ app: await appSettings() });
+      const app = normalizeApp(await appSettings());
+      set({ app });
+      useFeedStore.getState().setMaxEntries(app.feedMaxEntries);
     } catch {
       set({ app: EMPTY_APP });
+      useFeedStore.getState().setMaxEntries(EMPTY_APP.feedMaxEntries);
     }
     await get().refreshRoots();
   },
@@ -166,15 +183,17 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   toggleShowAgentContext: async () =>
     persist(set, async () => ({
-      app: await setAppSettings({
-        ...get().app,
-        showAgentContext: !get().app.showAgentContext,
-      }),
+      app: normalizeApp(
+        await setAppSettings({
+          ...get().app,
+          showAgentContext: !get().app.showAgentContext,
+        }),
+      ),
     })),
 
   setAgentRoots: async (roots) =>
     persist(set, async () => ({
-      app: await setAppSettings({ ...get().app, agentRoots: roots }),
+      app: normalizeApp(await setAppSettings({ ...get().app, agentRoots: roots })),
     })),
 
   // Takes effect on the *next* connection: a daemon already running was
@@ -182,19 +201,40 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   // would drop their session to fix a setting they may be mid-typing.
   setDaemonCommand: async (command) =>
     persist(set, async () => ({
-      app: await setAppSettings({
-        ...get().app,
-        daemonCommand: command.trim() || EMPTY_APP.daemonCommand,
-      }),
+      app: normalizeApp(
+        await setAppSettings({
+          ...get().app,
+          daemonCommand: command.trim() || EMPTY_APP.daemonCommand,
+        }),
+      ),
     })),
 
   toggleAutoInstallDaemon: async () =>
     persist(set, async () => ({
-      app: await setAppSettings({
-        ...get().app,
-        autoInstallDaemon: !get().app.autoInstallDaemon,
-      }),
+      app: normalizeApp(
+        await setAppSettings({
+          ...get().app,
+          autoInstallDaemon: !get().app.autoInstallDaemon,
+        }),
+      ),
     })),
+
+  // Presentation-only: no tree reload. Trim the live feed immediately so a
+  // lower cap takes effect without waiting for the next batch.
+  setFeedMaxEntries: async (max) =>
+    enqueue(async () => {
+      set({ saving: true, error: null });
+      try {
+        const feedMaxEntries = clampFeedMaxEntries(max);
+        const app = normalizeApp(await setAppSettings({ ...get().app, feedMaxEntries }));
+        set({ app, saving: false });
+        useFeedStore.getState().setMaxEntries(app.feedMaxEntries);
+        return true;
+      } catch (err) {
+        set({ saving: false, error: toErrorMessage(err) });
+        return false;
+      }
+    }),
 
   isPinned: (path) => get().settings.pinned.includes(path),
 

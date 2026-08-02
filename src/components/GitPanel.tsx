@@ -17,7 +17,7 @@ const BADGE: Record<GitStatusKind, string> = {
   modified: "M",
   deleted: "D",
   renamed: "R",
-  untracked: "U",
+  untracked: "?",
   conflicted: "!",
 };
 
@@ -63,13 +63,11 @@ export default function GitPanel() {
         >
           ▸
         </span>
-        <span className="text-[10px] font-semibold uppercase tracking-wide text-text-muted">
-          Source control
-        </span>
-        <span className="ml-auto shrink-0 font-mono text-xs text-text-muted">
-          {staged.length > 0 && <span className="text-git-added">{staged.length} staged</span>}
-          {staged.length > 0 && unstaged.length > 0 && " · "}
-          {unstaged.length > 0 && `${unstaged.length} changed`}
+        <span className="section-label">Source control</span>
+        <span className="ml-auto shrink-0 text-[11px] tabular-nums text-text-muted">
+          {staged.length > 0 && <span className="text-git-added">S {staged.length}</span>}
+          {staged.length > 0 && unstaged.length > 0 && "  "}
+          {unstaged.length > 0 && <span>M {unstaged.length}</span>}
         </span>
       </button>
 
@@ -151,14 +149,12 @@ function FileGroup({
   return (
     <section>
       <div className="flex items-center gap-2 px-2 py-1">
-        <h3 className="text-[10px] font-semibold uppercase tracking-wide text-text-muted">
-          {label}
-        </h3>
+        <h3 className="section-label">{label}</h3>
         <button
           type="button"
           onClick={() => void applyAll()}
           disabled={disabled}
-          className="ml-auto text-xs text-text-muted hover:text-accent disabled:opacity-40"
+          className="ml-auto text-[11px] text-text-muted hover:text-accent disabled:opacity-40"
         >
           {verb} all
         </button>
@@ -167,12 +163,12 @@ function FileGroup({
         {files.map((file) => (
           <li key={`${action}:${file.path}`}>
             <div
-              className={`group flex items-center gap-1.5 px-2 py-0.5 text-sm ${
+              className={`group flex items-center gap-1.5 px-2 py-0.5 text-xs ${
                 selected === file.path ? "bg-selected" : "hover:bg-hover"
               }`}
             >
               <span
-                className={`w-3 shrink-0 text-center font-mono text-xs ${BADGE_CLASS[file.status]}`}
+                className={`w-3 shrink-0 text-center text-[11px] tabular-nums ${BADGE_CLASS[file.status]}`}
               >
                 {BADGE[file.status]}
               </span>
@@ -180,7 +176,7 @@ function FileGroup({
                 type="button"
                 onClick={() => void useTreeStore.getState().revealPath(file.path)}
                 title={file.path}
-                className="min-w-0 flex-1 truncate text-left text-text"
+                className="min-w-0 flex-1 truncate text-left text-text-body"
               >
                 {file.path}
               </button>
@@ -190,7 +186,7 @@ function FileGroup({
                 disabled={disabled}
                 title={`${verb} ${file.path}`}
                 aria-label={`${verb} ${file.path}`}
-                className="shrink-0 px-1 text-xs text-text-muted opacity-0 hover:text-accent group-hover:opacity-100 disabled:opacity-0"
+                className="shrink-0 px-1 text-[11px] text-text-muted opacity-0 hover:text-accent group-hover:opacity-100 disabled:opacity-0"
               >
                 {action === "stage" ? "+" : "−"}
               </button>
@@ -220,7 +216,7 @@ function CommitBox({ stagedCount, busy }: { stagedCount: number; busy: boolean }
   };
 
   return (
-    <div className="shrink-0 border-t border-border p-2">
+    <div className="shrink-0 border-t border-border bg-surface-raised p-2">
       <textarea
         value={message}
         onChange={(event) => setMessage(event.target.value)}
@@ -235,10 +231,10 @@ function CommitBox({ stagedCount, busy }: { stagedCount: number; busy: boolean }
         rows={2}
         placeholder={amend ? "Reword the previous commit…" : "Commit message…"}
         aria-label="Commit message"
-        className="w-full resize-y rounded border border-border bg-bg p-1.5 text-xs text-text outline-none placeholder:text-text-muted focus:border-glow"
+        className="w-full resize-y rounded border border-border bg-surface p-1.5 text-xs text-text outline-none placeholder:text-text-muted focus:border-accent"
       />
       <div className="mt-1.5 flex items-center gap-2">
-        <label className="flex cursor-pointer items-center gap-1 text-xs text-text-muted">
+        <label className="flex cursor-pointer items-center gap-1 text-[11px] text-text-muted">
           <input
             type="checkbox"
             checked={amend}
@@ -252,7 +248,7 @@ function CommitBox({ stagedCount, busy }: { stagedCount: number; busy: boolean }
           onClick={() => void submit()}
           disabled={!canCommit}
           title="Commit staged changes (Ctrl+Enter)"
-          className="ml-auto rounded bg-selected px-3 py-1 text-xs text-text hover:bg-hover disabled:opacity-40"
+          className="ml-auto h-7 rounded border border-accent px-3 text-[11px] font-medium text-accent hover:bg-hover disabled:opacity-40"
         >
           {busy
             ? "Working…"

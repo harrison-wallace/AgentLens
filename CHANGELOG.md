@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-02
+
+Terminal-native UI redesign, a controllable activity feed, and session +/− in
+the status bar.
+
+### Added
+
+- **Design system (`DESIGN.md`)** — dark TUI dialect: JetBrains Mono, warm
+  near-black canvas, hairline panes, single-letter kind badges, semantic color
+  only for change kinds.
+- **Activity feed filter and sort** — toolbar stats (`+ M − →`) filter by kind;
+  click the sort control to cycle `time` / `most +` / `most −` / `most`.
+- **Session +/− in the footer** — running totals of files created and deleted
+  since watching started (or last Clear), separate from git working-tree
+  counts.
+- **Configurable feed length** — default 250 batches (was 100); set 50–2000
+  under Settings → All workspaces → Activity feed length. Session totals are
+  not capped by the list.
+- **F11 fullscreen** — toggles the native window (Tauri is not a browser tab).
+- **Pin button clearance** — scrollbar gutter and row padding so the tree pin
+  control is not covered when the scrollbar shows.
+
+### Changed
+
+- App chrome is mono-first at 12px density; markdown prose stays proportional.
+- Git untracked badge is `?` (aligned with the status bar).
+- Batch headers use compact stats (`M 3  + 1`) instead of English summaries.
+
 ## [0.2.1] - 2026-08-02
 
 Three bugs that between them made a first remote connection to a machine with

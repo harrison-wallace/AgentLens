@@ -154,7 +154,7 @@ export default function FileTree() {
         onKeyDown={onKeyDown}
         role="tree"
         aria-label="File tree"
-        className="min-h-0 flex-1 overflow-y-auto focus:outline-none"
+        className="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable] focus:outline-none"
       >
         <div
           role="presentation"
@@ -209,8 +209,8 @@ export default function FileTree() {
                 }}
                 title={row.path}
                 style={{ ...commonStyle, paddingLeft: row.depth * 14 + 8 }}
-                className={`group flex cursor-default items-center gap-1 truncate pr-1 text-left text-sm ${
-                  isSelected ? "bg-selected text-text" : "text-text hover:bg-hover"
+                className={`group flex cursor-default items-center gap-1 pr-4 text-left text-xs ${
+                  isSelected ? "bg-selected text-text" : "text-text-body hover:bg-hover"
                 } ${isRecentlyChanged ? "tree-row-glow" : ""}`}
               >
                 {row.isDir ? (
@@ -226,7 +226,7 @@ export default function FileTree() {
                 )}
                 <span
                   className={`min-w-0 flex-1 truncate ${isLoading ? "opacity-50" : ""} ${
-                    row.ignored ? "italic text-text-muted" : ""
+                    row.ignored ? "text-text-ash" : ""
                   }`}
                   title={row.ignored ? `${row.path} — ignored by git` : undefined}
                 >
@@ -234,16 +234,16 @@ export default function FileTree() {
                 </span>
                 {row.agentContext && (
                   <span
-                    className="shrink-0 text-xs text-accent"
+                    className="shrink-0 text-[11px] text-accent"
                     title="Agent context file — always shown"
                     aria-label="Agent context file"
                   >
                     ◆
                   </span>
                 )}
-                {isLoading && <span className="shrink-0 text-xs text-text-muted">…</span>}
+                {isLoading && <span className="shrink-0 text-[11px] text-text-muted">…</span>}
                 {!isLoading && badge && statusKind && (
-                  <span className={`shrink-0 font-mono text-xs ${BADGE_CLASS[statusKind]}`}>
+                  <span className={`shrink-0 text-[11px] tabular-nums ${BADGE_CLASS[statusKind]}`}>
                     {badge}
                   </span>
                 )}
@@ -277,7 +277,7 @@ function PinButton({ path, pinned }: { path: string; pinned: boolean }) {
       title={pinned ? `Unpin ${path}` : `Pin ${path} — keeps it visible and at the top`}
       aria-label={pinned ? `Unpin ${path}` : `Pin ${path}`}
       aria-pressed={pinned}
-      className={`shrink-0 px-1 text-xs hover:text-accent ${
+      className={`shrink-0 px-1 text-[11px] hover:text-accent ${
         pinned
           ? "text-accent"
           : "text-text-muted opacity-0 group-hover:opacity-100 focus:opacity-100"
@@ -307,15 +307,13 @@ function PinnedGroup() {
   };
 
   return (
-    <div className="max-h-40 shrink-0 overflow-y-auto border-b border-border pb-1">
-      <h2 className="px-2 pb-0.5 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-text-muted">
-        Pinned
-      </h2>
+    <div className="max-h-40 shrink-0 overflow-y-auto border-b border-border pb-1 [scrollbar-gutter:stable]">
+      <h2 className="section-label px-2 pb-0.5 pt-1.5">Pinned</h2>
       <ul>
         {pins.map((entry) => (
           <li key={entry.path}>
             <div
-              className={`flex items-center gap-1 pl-2 pr-1 text-sm ${
+              className={`flex items-center gap-1 pl-2 pr-4 text-xs ${
                 selected === entry.path ? "bg-selected" : "hover:bg-hover"
               }`}
               style={{ height: ROW_HEIGHT }}
@@ -326,18 +324,18 @@ function PinnedGroup() {
                 disabled={!entry.exists}
                 title={entry.exists ? entry.path : `${entry.path} — no longer exists`}
                 className={`min-w-0 flex-1 truncate text-left ${
-                  entry.exists ? "text-text" : "text-text-muted line-through"
+                  entry.exists ? "text-text-body" : "text-text-ash line-through"
                 }`}
               >
                 {entry.name}
-                <span className="ml-1.5 truncate text-xs text-text-muted">{entry.path}</span>
+                <span className="ml-1.5 truncate text-[11px] text-text-muted">{entry.path}</span>
               </button>
               <button
                 type="button"
                 onClick={() => void togglePin(entry.path)}
                 title={`Unpin ${entry.path}`}
                 aria-label={`Unpin ${entry.path}`}
-                className="shrink-0 px-1 text-xs text-accent hover:text-text"
+                className="shrink-0 px-1 text-[11px] text-accent hover:text-text"
               >
                 {PIN_ON}
               </button>

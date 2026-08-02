@@ -43,11 +43,11 @@ export default function WorkspaceHeader() {
 
   return (
     <header className="flex h-10 shrink-0 items-center gap-3 border-b border-border bg-surface-raised px-3">
-      <span className="shrink-0 truncate text-sm font-semibold text-text">{workspace.name}</span>
-      <span className="min-w-0 flex-1 truncate text-xs text-text-muted" title={workspace.root}>
+      <span className="shrink-0 truncate text-xs font-medium text-text">{workspace.name}</span>
+      <span className="min-w-0 flex-1 truncate text-[11px] text-text-muted" title={workspace.root}>
         {workspace.root}
       </span>
-      <span className="shrink-0 text-xs text-text-muted">
+      <span className="shrink-0 text-[11px] text-text-muted">
         watching since {watchingSinceLabel(workspace.watchingSince)}
       </span>
       <div className="flex shrink-0 items-center gap-1">
@@ -76,14 +76,14 @@ export default function WorkspaceHeader() {
           type="button"
           onClick={() => void handleClear()}
           title="Reset what counts as changed since the session started"
-          className="rounded border border-border px-2 py-1 text-xs text-text-muted hover:bg-hover hover:text-text"
+          className="h-7 rounded border border-border-strong px-2 text-[11px] text-text-muted hover:bg-hover hover:text-text"
         >
           Clear
         </button>
         <button
           type="button"
           onClick={handleRefresh}
-          className="rounded border border-accent px-2 py-1 text-xs font-medium text-accent hover:bg-hover"
+          className="h-7 rounded border border-accent px-2 text-[11px] font-medium text-accent hover:bg-hover"
         >
           Refresh
         </button>
@@ -100,7 +100,7 @@ export default function WorkspaceHeader() {
         <button
           type="button"
           onClick={() => void close()}
-          className="rounded border border-border px-2 py-1 text-xs text-text-muted hover:bg-hover hover:text-text"
+          className="h-7 rounded border border-border-strong px-2 text-[11px] text-text-muted hover:bg-hover hover:text-text"
         >
           Close
         </button>
@@ -126,7 +126,7 @@ function IconButton({
       onClick={onClick}
       title={label}
       aria-label={label}
-      className={`rounded px-2 py-1 text-xs hover:bg-hover hover:text-text ${
+      className={`flex h-7 items-center rounded px-2 text-[11px] hover:bg-hover hover:text-text ${
         active === false ? "text-text-muted opacity-50" : "text-text-muted"
       }`}
     >

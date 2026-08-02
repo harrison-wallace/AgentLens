@@ -1,6 +1,6 @@
 [package]
 name = "agentlens-core"
-version = "0.2.1"
+version = "0.3.0"
 description = "Filesystem, git and agent observation for AgentLens — no UI, no Tauri"
 authors = ["Harrison Wallace"]
 license = "MIT"

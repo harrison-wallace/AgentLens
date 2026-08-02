@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { DEFAULT_FEED_MAX_ENTRIES, MAX_FEED_MAX_ENTRIES, MIN_FEED_MAX_ENTRIES } from "../lib/feed";
 import { useConnectionStore } from "../stores/connectionStore";
 import { useSettingsStore } from "../stores/settingsStore";
 import type { AgentKind } from "../lib/protocol";
@@ -23,6 +24,7 @@ export default function SettingsPanel() {
   const toggleShowIgnored = useSettingsStore((s) => s.toggleShowIgnored);
   const toggleShowAgentContext = useSettingsStore((s) => s.toggleShowAgentContext);
   const toggleAutoInstallDaemon = useSettingsStore((s) => s.toggleAutoInstallDaemon);
+  const setFeedMaxEntries = useSettingsStore((s) => s.setFeedMaxEntries);
 
   // Esc closes; there is nothing to lose by closing, since every control here
   // has already applied.
@@ -46,16 +48,16 @@ export default function SettingsPanel() {
         role="dialog"
         aria-modal="true"
         aria-label="Settings"
-        className="max-h-[80vh] w-[34rem] max-w-[90vw] overflow-y-auto rounded border border-border bg-surface shadow-xl"
+        className="max-h-[80vh] w-[34rem] max-w-[90vw] overflow-y-auto rounded border border-border-strong bg-surface-raised"
         onMouseDown={(event) => event.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
-          <h2 className="text-sm font-semibold text-text">Settings</h2>
+          <h2 className="text-xs font-medium text-text">Settings</h2>
           <button
             type="button"
             onClick={() => setOpen(false)}
             aria-label="Close settings"
-            className="rounded px-2 text-sm text-text-muted hover:bg-hover hover:text-text"
+            className="rounded px-2 text-xs text-text-muted hover:bg-hover hover:text-text"
           >
             ✕
           </button>
@@ -96,6 +98,11 @@ export default function SettingsPanel() {
             checked={app.showAgentContext}
             disabled={saving}
             onChange={() => void toggleShowAgentContext()}
+          />
+          <FeedMaxEntries
+            value={app.feedMaxEntries}
+            disabled={saving}
+            onCommit={(n) => void setFeedMaxEntries(n)}
           />
           <AgentRoots />
         </Section>
@@ -147,11 +154,11 @@ function AgentRoots() {
         somewhere unusual.
       </p>
 
-      <ul className="mt-1.5 space-y-0.5 rounded border border-border bg-bg p-2">
-        {roots.length === 0 && <li className="font-mono text-xs text-text-muted">None found</li>}
+      <ul className="mt-1.5 space-y-0.5 rounded border border-border bg-surface p-2">
+        {roots.length === 0 && <li className="text-xs text-text-muted">None found</li>}
         {roots.map((root) => (
-          <li key={root.path} className="flex items-baseline gap-2 font-mono text-xs">
-            <span className="min-w-0 flex-1 truncate text-text" title={root.path}>
+          <li key={root.path} className="flex items-baseline gap-2 text-xs">
+            <span className="min-w-0 flex-1 truncate text-text-body" title={root.path}>
               {root.path}
             </span>
             {root.agent ? (
@@ -221,11 +228,70 @@ function DaemonCommand() {
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="border-b border-border px-4 py-3 last:border-b-0">
-      <h3 className="pb-2 text-[10px] font-semibold uppercase tracking-wide text-text-muted">
-        {title}
-      </h3>
+      <h3 className="section-label pb-2">{title}</h3>
       <div className="flex flex-col gap-3">{children}</div>
     </section>
+  );
+}
+
+/**
+ * How many activity batches to keep. Live window only — not full history —
+ * so the unvirtualized feed stays bounded.
+ */
+function FeedMaxEntries({
+  value,
+  disabled,
+  onCommit,
+}: {
+  value: number;
+  disabled: boolean;
+  onCommit: (n: number) => void;
+}) {
+  const [text, setText] = useState(String(value));
+
+  useEffect(() => {
+    setText(String(value));
+  }, [value]);
+
+  const commit = () => {
+    const parsed = Number.parseInt(text, 10);
+    if (!Number.isFinite(parsed)) {
+      setText(String(value));
+      return;
+    }
+    if (parsed === value) return;
+    onCommit(parsed);
+  };
+
+  return (
+    <div>
+      <label className="block text-xs font-medium text-text" htmlFor="feed-max-entries">
+        Activity feed length
+      </label>
+      <p className="text-xs text-text-muted">
+        Max batches kept in the feed (oldest drop off). Default {DEFAULT_FEED_MAX_ENTRIES}; range{" "}
+        {MIN_FEED_MAX_ENTRIES}–{MAX_FEED_MAX_ENTRIES}. Does not change the session +/− totals in the
+        footer.
+      </p>
+      <input
+        id="feed-max-entries"
+        type="number"
+        min={MIN_FEED_MAX_ENTRIES}
+        max={MAX_FEED_MAX_ENTRIES}
+        step={1}
+        value={text}
+        disabled={disabled}
+        onChange={(event) => setText(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            (event.target as HTMLInputElement).blur();
+          }
+        }}
+        className="mt-1.5 h-8 w-28 rounded border border-border bg-surface px-2.5 text-xs text-text outline-none placeholder:text-text-muted focus:border-accent disabled:opacity-40"
+      />
+    </div>
   );
 }
 
@@ -290,7 +356,7 @@ function TextField({
       }}
       spellCheck={false}
       placeholder={placeholder}
-      className="mt-1.5 w-full rounded border border-border bg-bg p-2 font-mono text-xs text-text outline-none placeholder:text-text-muted focus:border-glow"
+      className="mt-1.5 h-8 w-full rounded border border-border bg-surface px-2.5 text-xs text-text outline-none placeholder:text-text-muted focus:border-accent"
     />
   );
 }
@@ -350,7 +416,7 @@ function TextRows({
         rows={rows}
         spellCheck={false}
         placeholder={placeholder}
-        className="mt-1.5 w-full resize-y rounded border border-border bg-bg p-2 font-mono text-xs text-text outline-none placeholder:text-text-muted focus:border-glow"
+        className="mt-1.5 w-full resize-y rounded border border-border bg-surface p-2.5 text-xs text-text outline-none placeholder:text-text-muted focus:border-accent"
       />
     </div>
   );

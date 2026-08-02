@@ -69,8 +69,8 @@ export default function Splitter({ width, onResize, side, label }: SplitterProps
       onPointerUp={stop}
       onPointerCancel={stop}
       onKeyDown={onKeyDown}
-      className={`w-1 shrink-0 cursor-col-resize bg-border transition-colors hover:bg-glow focus:bg-glow focus:outline-none ${
-        dragging ? "bg-glow" : ""
+      className={`w-1 shrink-0 cursor-col-resize bg-border transition-colors hover:bg-accent/40 focus:bg-accent/40 focus:outline-none ${
+        dragging ? "bg-accent/50" : ""
       }`}
     />
   );

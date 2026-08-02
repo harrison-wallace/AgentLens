@@ -1,31 +1,56 @@
 @import "tailwindcss";
 
+/*
+ * Design tokens — see DESIGN.md.
+ * Existing Tailwind color names (surface, text, border, git-*) are kept as the
+ * public API so components stay stable while the ramp matches the TUI system.
+ */
 @theme {
-  /* dark-first design tokens */
-  --color-surface: #0d0f12;
-  --color-surface-raised: #14181d;
-  --color-border: #232a32;
-  --color-text: #e6e9ee;
-  --color-text-muted: #8b94a3;
-  --color-accent: #5b9dff;
+  /* Surfaces — warm near-black canvas */
+  --color-surface: #0f0e0e;
+  --color-bg: #0f0e0e;
+  --color-surface-raised: #1a1818;
+  --color-surface-overlay: #241f1f;
+  --color-border: rgb(253 252 252 / 0.08);
+  --color-border-strong: rgb(253 252 252 / 0.14);
 
-  /* interaction */
-  --color-hover: #1a1f26;
-  --color-selected: #1e2a3d;
-  --color-danger: #f87171;
-  --color-glow: #5b9dff;
+  /* Text ladder */
+  --color-text: #e8e4e4;
+  --color-text-body: #c8c4c4;
+  --color-text-muted: #8a8686;
+  --color-text-ash: #6a6666;
+  --color-on-accent: #0f0e0e;
 
-  /* git status badges */
-  --color-git-added: #4ade80;
-  --color-git-modified: #fbbf24;
-  --color-git-deleted: #f87171;
-  --color-git-renamed: #60a5fa;
-  --color-git-untracked: #a78bfa;
-  --color-git-conflicted: #fb923c;
+  /* Semantic — scarce */
+  --color-accent: #007aff;
+  --color-accent-hover: #0056b3;
+  --color-danger: #ff3b30;
+  --color-warning: #ff9f0a;
+  --color-success: #30d158;
+  --color-glow: #007aff;
 
-  /* diff row backgrounds — tinted enough to scan, dim enough to read over */
-  --color-diff-added: #12301d;
-  --color-diff-removed: #351619;
+  /* Interaction */
+  --color-hover: #242020;
+  --color-selected: #2a2626;
+
+  /* Kind badges (git + activity feed) */
+  --color-git-added: #30d158;
+  --color-git-modified: #ff9f0a;
+  --color-git-deleted: #ff3b30;
+  --color-git-renamed: #64d2ff;
+  --color-git-untracked: #bf5af2;
+  --color-git-conflicted: #ff9f0a;
+
+  /* Diff gutters — low tint so syntax stays readable */
+  --color-diff-added: rgb(48 209 88 / 0.12);
+  --color-diff-removed: rgb(255 59 48 / 0.12);
+
+  /* Typography */
+  --font-mono:
+    "JetBrains Mono", "Geist Mono", "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Monaco,
+    Consolas, "Liberation Mono", "Courier New", monospace;
+  --font-prose: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-sans: var(--font-mono);
 }
 
 /* Panels own their own scrolling, so the window itself never scrolls. */
@@ -43,6 +68,12 @@ body,
 body {
   background-color: var(--color-surface);
   color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
 }
 
 /* Tree-row "recently changed" glow: a quick highlight that settles into a
@@ -63,6 +94,16 @@ body {
   animation: tree-row-glow-fade 3s ease-out forwards;
 }
 
+/* Section labels: 11px / 700 / uppercase tracking — DESIGN.md heading. */
+.section-label {
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.4;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
 /* Shiki emits its own inline theme colours; only the box is ours. Wrapping is
    off so long lines scroll rather than reflow and break the column feel. */
 .shiki-body pre {
@@ -70,34 +111,38 @@ body {
   padding: 0.5rem;
   overflow-x: auto;
   background-color: transparent !important;
+  font-family: var(--font-mono);
+  font-size: 12px;
   line-height: 1.55;
 }
 
-/* Rendered markdown. Tailwind's preflight strips heading and list styling, so
-   the few elements a README actually uses are restored here rather than
-   pulling in a typography plugin. */
+/* Rendered markdown. Prose may use the proportional stack; code stays mono. */
 .markdown-body {
   color: var(--color-text);
+  font-family: var(--font-prose);
+  font-size: 13px;
   line-height: 1.65;
 }
 .markdown-body h1,
 .markdown-body h2,
 .markdown-body h3,
 .markdown-body h4 {
+  font-family: var(--font-mono);
   font-weight: 600;
   line-height: 1.3;
   margin: 1.2em 0 0.5em;
+  color: var(--color-text);
 }
 .markdown-body h1 {
-  font-size: 1.5em;
+  font-size: 1.35em;
 }
 .markdown-body h2 {
-  font-size: 1.25em;
+  font-size: 1.15em;
   border-bottom: 1px solid var(--color-border);
   padding-bottom: 0.2em;
 }
 .markdown-body h3 {
-  font-size: 1.1em;
+  font-size: 1.05em;
 }
 .markdown-body p,
 .markdown-body ul,
@@ -121,13 +166,14 @@ body {
   text-decoration: underline;
 }
 .markdown-body code {
-  font-family: ui-monospace, monospace;
+  font-family: var(--font-mono);
   font-size: 0.9em;
   background-color: var(--color-hover);
   border-radius: 3px;
   padding: 0.1em 0.3em;
 }
 .markdown-body pre {
+  font-family: var(--font-mono);
   background-color: var(--color-surface-raised);
   border: 1px solid var(--color-border);
   border-radius: 4px;
@@ -152,6 +198,8 @@ body {
   border-collapse: collapse;
   display: block;
   overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
 }
 .markdown-body th,
 .markdown-body td {
@@ -164,4 +212,18 @@ body {
 }
 .markdown-body img {
   max-width: 100%;
+}
+
+/* Focus rings: accent outline, never removed. */
+:focus-visible {
+  outline: 1px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+/* Inputs inside the app often use outline-none + border focus; keep that. */
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+button:focus-visible {
+  outline-offset: 0;
 }

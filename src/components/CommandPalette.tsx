@@ -60,7 +60,7 @@ export default function CommandPalette() {
       onMouseDown={hide}
     >
       <div
-        className="w-[36rem] max-w-[90vw] overflow-hidden rounded border border-border bg-surface shadow-xl"
+        className="w-[36rem] max-w-[90vw] overflow-hidden rounded border border-border-strong bg-surface-raised"
         onMouseDown={(event) => event.stopPropagation()}
       >
         <input
@@ -70,12 +70,12 @@ export default function CommandPalette() {
           onKeyDown={onKeyDown}
           placeholder="Jump to file…"
           spellCheck={false}
-          className="w-full bg-transparent px-3 py-2 text-sm text-text outline-none placeholder:text-text-muted"
+          className="w-full bg-transparent px-3 py-2 text-xs text-text outline-none placeholder:text-text-muted"
         />
         <div className="max-h-80 overflow-y-auto border-t border-border">
-          {loading && <p className="px-3 py-2 text-xs text-text-muted">Indexing…</p>}
+          {loading && <p className="px-3 py-2 text-[11px] text-text-muted">Indexing…</p>}
           {!loading && results.length === 0 && (
-            <p className="px-3 py-2 text-xs text-text-muted">No matching files.</p>
+            <p className="px-3 py-2 text-[11px] text-text-muted">No matching files.</p>
           )}
           <ul ref={listRef}>
             {results.map((result, index) => (
@@ -87,8 +87,8 @@ export default function CommandPalette() {
                     // Guarded: mousemove fires continuously within one row.
                     if (index !== cursor) moveCursor(index - cursor, results.length);
                   }}
-                  className={`flex w-full items-baseline gap-2 px-3 py-1 text-left text-sm ${
-                    index === cursor ? "bg-selected text-text" : "text-text hover:bg-hover"
+                  className={`flex w-full items-baseline gap-2 px-3 py-1 text-left text-xs ${
+                    index === cursor ? "bg-selected text-text" : "text-text-body hover:bg-hover"
                   }`}
                 >
                   <Highlighted path={result.path} positions={result.positions} />
@@ -109,7 +109,7 @@ function Highlighted({ path, positions }: { path: string; positions: number[] })
     <span className="min-w-0 truncate">
       {Array.from(path).map((char, index) =>
         marked.has(index) ? (
-          <span key={index} className="font-semibold text-glow">
+          <span key={index} className="font-medium text-accent">
             {char}
           </span>
         ) : (

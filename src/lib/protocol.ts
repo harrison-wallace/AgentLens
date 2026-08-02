@@ -216,6 +216,11 @@ export interface AppSettings {
    * with instructions. On by default.
    */
   autoInstallDaemon: boolean;
+  /**
+   * Max activity-feed batches kept in the UI (oldest drop off). Default 250.
+   * Presentation only — the backend ignores this.
+   */
+  feedMaxEntries: number;
 }
 
 /** Which coding agent a session belongs to. */

@@ -2,7 +2,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/harrison-wallace/AgentLens/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/harrison-wallace/AgentLens/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/actions/workflow/status/harrison-wallace/AgentLens/release.yml?style=flat-square&label=release)](https://github.com/harrison-wallace/AgentLens/actions/workflows/release.yml)
-[![Version](https://img.shields.io/badge/version-0.2.1-6366f1?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.3.0-6366f1?style=flat-square)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 
 [![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app)
@@ -16,7 +16,7 @@ read-only window into what your terminal coding agent (Claude Code, opencode,
 …) is doing to a directory: live file tree, change feed, git status,
 read-only previews. Runs on Windows and Ubuntu.
 
-**Status:** v0.2.1 — the MVP feature set is complete, including remote
+**Status:** v0.3.0 — the MVP feature set is complete, including remote
 workspaces over WSL and SSH with no manual setup on the remote machine. Still
 pre-alpha: acceptance testing on Windows and Ubuntu is outstanding.
 
@@ -26,9 +26,11 @@ pre-alpha: acceptance testing on Windows and Ubuntu is outstanding.
 
 - **Live file tree** — virtualized, lazy, gitignore-aware, with git status
   badges and a fading highlight on whatever just changed.
-- **Activity feed** — filesystem changes grouped per debounced burst, newest
-  first; click a row to reveal it in the tree. An `npm install` produces no
-  feed spam.
+- **Activity feed** — filesystem changes grouped per debounced burst; filter
+  and sort from the toolbar, click a row to reveal it in the tree. An
+  `npm install` produces no feed spam. Session +/− totals live in the status
+  bar.
+
 - **Read-only preview** — syntax-highlighted code, images, rendered markdown,
   with a size guard and an "open externally" escape hatch.
 - **Diff since session** — what changed in a file since you started watching,
@@ -75,15 +77,16 @@ Three rules follow from that, and they explain most of the design:
 
 Settings are split by what they affect, not where they're stored.
 
-| Scope              | Setting                       | Purpose                                                                         |
-| ------------------ | ----------------------------- | ------------------------------------------------------------------------------- |
-| **This workspace** | Show git-ignored files        | Reveal everything `.gitignore` hides. An escape hatch, not an everyday setting. |
-| **This workspace** | Pinned paths                  | Files and directories kept visible and grouped at the top of the tree.          |
-| **This workspace** | Extra ignore globs            | Gitignore syntax; hidden from the tree, the file jump, and the activity feed.   |
-| **All workspaces** | Show agent context            | Surface `AGENTS.md`, `CLAUDE.md` and friends even when git ignores them.        |
-| **All workspaces** | Agent session folders         | Where to look for coding-agent sessions. Detected automatically; add your own.  |
-| **Remote**         | Set up machines automatically | Install the observer on a WSL distro or SSH host that hasn't got one.           |
-| **Remote**         | Daemon command                | Run exactly this on the remote instead. The escape hatch; normally unset.       |
+| Scope              | Setting                       | Purpose                                                                          |
+| ------------------ | ----------------------------- | -------------------------------------------------------------------------------- |
+| **This workspace** | Show git-ignored files        | Reveal everything `.gitignore` hides. An escape hatch, not an everyday setting.  |
+| **This workspace** | Pinned paths                  | Files and directories kept visible and grouped at the top of the tree.           |
+| **This workspace** | Extra ignore globs            | Gitignore syntax; hidden from the tree, the file jump, and the activity feed.    |
+| **All workspaces** | Show agent context            | Surface `AGENTS.md`, `CLAUDE.md` and friends even when git ignores them.         |
+| **All workspaces** | Agent session folders         | Where to look for coding-agent sessions. Detected automatically; add your own.   |
+| **All workspaces** | Activity feed length          | Max batches kept in the feed (default 250). Session +/− totals still accumulate. |
+| **Remote**         | Set up machines automatically | Install the observer on a WSL distro or SSH host that hasn't got one.            |
+| **Remote**         | Daemon command                | Run exactly this on the remote instead. The escape hatch; normally unset.        |
 
 Panel widths and collapse state are view state, not configuration — they're
 remembered automatically and stay out of the settings dialog.

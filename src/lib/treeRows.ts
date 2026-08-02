@@ -55,7 +55,7 @@ const BADGES: Record<GitStatusKind, string> = {
   modified: "M",
   deleted: "D",
   renamed: "R",
-  untracked: "U",
+  untracked: "?",
   conflicted: "!",
 };
 

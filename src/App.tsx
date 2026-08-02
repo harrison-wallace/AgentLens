@@ -97,9 +97,20 @@ export default function App() {
     };
   }, []);
 
-  // `Ctrl+P` (`Cmd+P`) anywhere opens the file jump.
+  // Global chrome keys: `Ctrl+P` file jump, `F11` native fullscreen.
+  // Fullscreen is not free in a Tauri window the way it is in a browser tab —
+  // the webview never owns the shell, so the app has to call the window API.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "F11") {
+        event.preventDefault();
+        void (async () => {
+          const { getCurrentWindow } = await import("@tauri-apps/api/window");
+          const win = getCurrentWindow();
+          await win.setFullscreen(!(await win.isFullscreen()));
+        })();
+        return;
+      }
       if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "p") return;
       // Don't stack the palette on top of another modal, or re-open (and so
       // reset) the one already showing.

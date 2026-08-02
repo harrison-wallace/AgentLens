@@ -1,13 +1,14 @@
 import { create } from "zustand";
+import { clampFeedMaxEntries, DEFAULT_FEED_MAX_ENTRIES } from "../lib/feed";
 import type { FsEvent } from "../lib/protocol";
 
 /**
  * The feed renders every entry it holds, so this bound is a DOM-node budget
- * as much as a memory one: at up to 20 rendered rows per entry, 100 keeps the
- * worst case near 2k nodes. It's a live activity view, not the history — that
- * arrives with session snapshots.
+ * as much as a memory one: at up to 20 rendered rows per entry, 250 keeps the
+ * worst case near 5k nodes. It's a live activity view, not the history — that
+ * arrives with session snapshots. Override via app setting `feedMaxEntries`.
  */
-const MAX_ENTRIES = 100;
+const DEFAULT_MAX_ENTRIES = DEFAULT_FEED_MAX_ENTRIES;
 
 /**
  * One thing in the feed: a debounced batch of changes, or a window in which
@@ -28,14 +29,32 @@ export type FeedEntry =
       to: number | null;
     };
 
+/** Session-scoped file create/delete counts for the status bar. */
+export interface SessionTotals {
+  created: number;
+  deleted: number;
+}
+
+const EMPTY_TOTALS: SessionTotals = { created: 0, deleted: 0 };
+
 interface FeedStore {
-  /** Newest-first, bounded at `MAX_ENTRIES`. */
+  /** Newest-first, bounded at `maxEntries`. */
   entries: FeedEntry[];
+  /** Cap applied on insert and when the setting changes. */
+  maxEntries: number;
+  /**
+   * Running +/− for this watch session. Survives feed entry eviction so the
+   * footer stays honest after the list scrolls past the cap; reset by `clear`
+   * (Clear / session restart).
+   */
+  sessionTotals: SessionTotals;
   addBatch: (events: FsEvent[]) => void;
   /** The connection went down at `at`; start marking the window. */
   beginGap: (at: number) => void;
   /** The connection came back at `at`; close the open window, if any. */
   endGap: (at: number) => void;
+  /** Apply a new cap from settings and drop oldest entries if needed. */
+  setMaxEntries: (max: number) => void;
   clear: () => void;
 }
 
@@ -52,13 +71,35 @@ function isOpenGap(entry: FeedEntry): entry is Gap {
   return entry.kind === "gap" && entry.to === null;
 }
 
+/** Count file creates/deletes in a batch for the session running total. */
+export function countSessionDelta(events: readonly FsEvent[]): SessionTotals {
+  let created = 0;
+  let deleted = 0;
+  for (const event of events) {
+    if (event.kind === "created") created += 1;
+    else if (event.kind === "deleted") deleted += 1;
+  }
+  return { created, deleted };
+}
+
 export const useFeedStore = create<FeedStore>((set, get) => ({
   entries: [],
+  maxEntries: DEFAULT_MAX_ENTRIES,
+  sessionTotals: { ...EMPTY_TOTALS },
 
   addBatch: (events) => {
     if (events.length === 0) return;
     const entry: FeedEntry = { kind: "batch", id: id(), at: Date.now(), events };
-    set({ entries: [entry, ...get().entries].slice(0, MAX_ENTRIES) });
+    const delta = countSessionDelta(events);
+    const prev = get().sessionTotals;
+    const max = get().maxEntries;
+    set({
+      entries: [entry, ...get().entries].slice(0, max),
+      sessionTotals: {
+        created: prev.created + delta.created,
+        deleted: prev.deleted + delta.deleted,
+      },
+    });
   },
 
   beginGap: (at) => {
@@ -67,7 +108,7 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
     // per attempt.
     if (entries.some(isOpenGap)) return;
     const entry: FeedEntry = { kind: "gap", id: id(), at, from: at, to: null };
-    set({ entries: [entry, ...entries].slice(0, MAX_ENTRIES) });
+    set({ entries: [entry, ...entries].slice(0, get().maxEntries) });
   },
 
   // Searched for rather than assumed to be newest: a reconnecting daemon
@@ -83,5 +124,13 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
     });
   },
 
-  clear: () => set({ entries: [] }),
+  setMaxEntries: (max) => {
+    const maxEntries = clampFeedMaxEntries(max);
+    set({
+      maxEntries,
+      entries: get().entries.slice(0, maxEntries),
+    });
+  },
+
+  clear: () => set({ entries: [], sessionTotals: { ...EMPTY_TOTALS } }),
 }));

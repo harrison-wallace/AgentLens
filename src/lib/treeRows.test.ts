@@ -89,7 +89,7 @@ describe("gitBadgeFor", () => {
     ["modified", "M"],
     ["deleted", "D"],
     ["renamed", "R"],
-    ["untracked", "U"],
+    ["untracked", "?"],
     ["conflicted", "!"],
   ];
 

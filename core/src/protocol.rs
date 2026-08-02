@@ -326,6 +326,15 @@ pub struct AppSettings {
     /// already has permission to run commands there, which is strictly more
     /// than writing one file into the user's own home directory.
     pub auto_install_daemon: bool,
+    /// How many activity-feed batches the UI keeps. Pure presentation: backends
+    /// ignore this. Default and clamp live with the UI; stored as a plain
+    /// number so older clients that never wrote the field still deserialize.
+    #[serde(default = "default_feed_max_entries")]
+    pub feed_max_entries: u32,
+}
+
+fn default_feed_max_entries() -> u32 {
+    250
 }
 
 impl Default for AppSettings {
@@ -335,6 +344,7 @@ impl Default for AppSettings {
             agent_roots: Vec::new(),
             daemon_command: "agentlens-daemon".to_string(),
             auto_install_daemon: true,
+            feed_max_entries: default_feed_max_entries(),
         }
     }
 }

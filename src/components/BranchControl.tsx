@@ -41,7 +41,7 @@ export default function BranchControl() {
         aria-expanded={open}
         aria-haspopup="menu"
         title="Switch branch, create a branch, or stash"
-        className="rounded px-1 text-xs text-text-muted hover:bg-hover hover:text-text disabled:opacity-40"
+        className="rounded px-1 text-[11px] text-text-muted hover:bg-hover hover:text-text disabled:opacity-40"
       >
         ⑂ {label} ▾
       </button>
@@ -52,7 +52,7 @@ export default function BranchControl() {
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} aria-hidden />
           <div
             role="menu"
-            className="absolute bottom-full left-0 z-50 mb-1 w-64 rounded border border-border bg-surface p-1 shadow-xl"
+            className="absolute bottom-full left-0 z-50 mb-1 w-64 rounded border border-border-strong bg-surface-raised p-1"
           >
             <ul className="max-h-48 overflow-y-auto">
               {branches.branches.map((name) => (
@@ -65,7 +65,7 @@ export default function BranchControl() {
                       void switchBranch(name);
                     }}
                     disabled={name === branches.current}
-                    className="w-full truncate rounded px-2 py-1 text-left text-xs text-text hover:bg-hover disabled:text-text-muted disabled:hover:bg-transparent"
+                    className="w-full truncate px-2 py-1 text-left text-xs text-text-body hover:bg-hover disabled:text-text-muted disabled:hover:bg-transparent"
                   >
                     {name === branches.current ? `✓ ${name}` : name}
                   </button>
@@ -85,7 +85,7 @@ export default function BranchControl() {
                 }}
                 placeholder="New branch…"
                 aria-label="New branch name"
-                className="w-full rounded border border-border bg-bg px-2 py-1 text-xs text-text outline-none placeholder:text-text-muted focus:border-glow"
+                className="h-8 w-full rounded border border-border bg-surface px-2 text-xs text-text outline-none placeholder:text-text-muted focus:border-accent"
               />
             </div>
 
@@ -97,7 +97,7 @@ export default function BranchControl() {
                   setOpen(false);
                   void stashPush();
                 }}
-                className="flex-1 rounded px-2 py-1 text-xs text-text-muted hover:bg-hover hover:text-text"
+                className="flex-1 rounded px-2 py-1 text-[11px] text-text-muted hover:bg-hover hover:text-text"
               >
                 Stash
               </button>
@@ -108,7 +108,7 @@ export default function BranchControl() {
                   setOpen(false);
                   void stashPop();
                 }}
-                className="flex-1 rounded px-2 py-1 text-xs text-text-muted hover:bg-hover hover:text-text"
+                className="flex-1 rounded px-2 py-1 text-[11px] text-text-muted hover:bg-hover hover:text-text"
               >
                 Pop stash
               </button>

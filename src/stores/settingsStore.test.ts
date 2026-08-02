@@ -13,6 +13,7 @@ const backend = {
     agentRoots: [],
     daemonCommand: "agentlens-daemon",
     autoInstallDaemon: true,
+    feedMaxEntries: 250,
   } as AppSettings,
 };
 
@@ -43,6 +44,10 @@ vi.mock("./treeStore", () => ({
   useTreeStore: { getState: () => ({ reloadLoaded: vi.fn(async () => undefined) }) },
 }));
 
+vi.mock("./feedStore", () => ({
+  useFeedStore: { getState: () => ({ setMaxEntries: vi.fn() }) },
+}));
+
 const { useSettingsStore } = await import("./settingsStore");
 
 describe("settingsStore", () => {
@@ -53,6 +58,7 @@ describe("settingsStore", () => {
       agentRoots: [],
       daemonCommand: "agentlens-daemon",
       autoInstallDaemon: true,
+      feedMaxEntries: 250,
     };
     useSettingsStore.setState({
       settings: { extraIgnores: [], showIgnored: false, pinned: [] },
@@ -61,6 +67,7 @@ describe("settingsStore", () => {
         agentRoots: [],
         daemonCommand: "agentlens-daemon",
         autoInstallDaemon: true,
+        feedMaxEntries: 250,
       },
       pins: [],
       error: null,
@@ -94,6 +101,7 @@ describe("settingsStore", () => {
       agentRoots: [],
       daemonCommand: "agentlens-daemon",
       autoInstallDaemon: true,
+      feedMaxEntries: 250,
     });
     // The workspace write must not have carried the app setting with it.
     expect(backend.workspace.pinned).toEqual(["notes.md"]);

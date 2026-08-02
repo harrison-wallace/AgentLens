@@ -1,20 +1,26 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useFeedStore, type FeedEntry } from "../stores/feedStore";
 import { useTreeStore } from "../stores/treeStore";
-import { gapLabel, groupLabel, summarizeBatch } from "../lib/feed";
+import {
+  countByKind,
+  countFeedByKind,
+  feedSortLabel,
+  feedSortTitle,
+  gapLabel,
+  groupLabel,
+  KIND_BADGE,
+  KIND_ORDER,
+  kindCountParts,
+  nextFeedSort,
+  presentFeedEntries,
+  type FeedSort,
+} from "../lib/feed";
 import type { FsEventKind } from "../lib/protocol";
 
 /** Render at most this many rows per batch; the rest collapse to "+N more". */
 const MAX_ROWS_PER_BATCH = 20;
 /** How often relative-time headers ("12s ago") refresh. */
 const TICK_INTERVAL_MS = 15_000;
-
-const KIND_BADGE: Record<FsEventKind, string> = {
-  created: "+",
-  modified: "M",
-  deleted: "−",
-  renamed: "→",
-};
 
 const KIND_CLASS: Record<FsEventKind, string> = {
   created: "text-git-added",
@@ -23,9 +29,18 @@ const KIND_CLASS: Record<FsEventKind, string> = {
   renamed: "text-git-renamed",
 };
 
+const KIND_LABEL: Record<FsEventKind, string> = {
+  created: "created",
+  modified: "modified",
+  deleted: "deleted",
+  renamed: "renamed",
+};
+
 export default function ActivityFeed() {
   const entries = useFeedStore((s) => s.entries);
   const revealPath = useTreeStore((s) => s.revealPath);
+  const [filter, setFilter] = useState<Set<FsEventKind>>(() => new Set());
+  const [sort, setSort] = useState<FeedSort>("time");
 
   // Forces a re-render every so often so "just now" / "12s ago" headers
   // stay roughly accurate without a timer per entry.
@@ -34,6 +49,21 @@ export default function ActivityFeed() {
     const id = setInterval(() => setTick((t) => t + 1), TICK_INTERVAL_MS);
     return () => clearInterval(id);
   }, []);
+
+  const totals = useMemo(() => countFeedByKind(entries), [entries]);
+  const presented = useMemo(
+    () => presentFeedEntries(entries, filter, sort),
+    [entries, filter, sort],
+  );
+
+  const toggleKind = (kind: FsEventKind) => {
+    setFilter((prev) => {
+      const next = new Set(prev);
+      if (next.has(kind)) next.delete(kind);
+      else next.add(kind);
+      return next;
+    });
+  };
 
   if (entries.length === 0) {
     return (
@@ -44,14 +74,93 @@ export default function ActivityFeed() {
   }
 
   return (
-    <div className="h-full min-h-0 overflow-y-auto">
-      {entries.map((entry) =>
-        entry.kind === "gap" ? (
-          <GapMarker key={entry.id} entry={entry} />
+    <div className="flex h-full min-h-0 flex-col">
+      <FeedToolbar
+        totals={totals}
+        filter={filter}
+        sort={sort}
+        onToggleKind={toggleKind}
+        onCycleSort={() => setSort((prev) => nextFeedSort(prev))}
+      />
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {presented.length === 0 ? (
+          <div className="flex h-full items-center justify-center p-4 text-center text-xs text-text-muted">
+            No matching activity.
+          </div>
         ) : (
-          <FeedBlock key={entry.id} entry={entry} onSelect={(path) => void revealPath(path)} />
-        ),
-      )}
+          presented.map((entry) =>
+            entry.kind === "gap" ? (
+              <GapMarker key={entry.id} entry={entry} />
+            ) : (
+              <FeedBlock key={entry.id} entry={entry} onSelect={(path) => void revealPath(path)} />
+            ),
+          )
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Compact status-bar twin: kind counts as filters, mono sort on the right.
+ * Totals are always for the full live feed, not the active filter.
+ */
+function FeedToolbar({
+  totals,
+  filter,
+  sort,
+  onToggleKind,
+  onCycleSort,
+}: {
+  totals: Record<FsEventKind, number>;
+  filter: ReadonlySet<FsEventKind>;
+  sort: FeedSort;
+  onToggleKind: (kind: FsEventKind) => void;
+  onCycleSort: () => void;
+}) {
+  const filtering = filter.size > 0;
+
+  return (
+    <div className="flex h-7 shrink-0 items-center gap-3 border-b border-border px-3 text-[11px] text-text-muted">
+      <span className="flex min-w-0 items-center gap-3 tabular-nums">
+        {KIND_ORDER.map((kind) => {
+          const count = totals[kind];
+          const active = filter.has(kind);
+          // When nothing is filtered every kind is "on"; once a filter is set,
+          // only selected kinds keep full color — the rest mute so the strip
+          // still shows the full feed totals without looking selected.
+          const emphasis = !filtering || active;
+          return (
+            <button
+              key={kind}
+              type="button"
+              onClick={() => onToggleKind(kind)}
+              aria-pressed={filtering ? active : false}
+              title={
+                active
+                  ? `Showing ${KIND_LABEL[kind]} only — click to clear`
+                  : filtering
+                    ? `Also show ${KIND_LABEL[kind]}`
+                    : `Show only ${KIND_LABEL[kind]}`
+              }
+              className={`shrink-0 rounded px-0.5 hover:bg-hover ${
+                emphasis ? KIND_CLASS[kind] : "text-text-muted opacity-50"
+              } ${active ? "underline decoration-current underline-offset-2" : ""}`}
+            >
+              {KIND_BADGE[kind]} {count}
+            </button>
+          );
+        })}
+      </span>
+      <button
+        type="button"
+        onClick={onCycleSort}
+        title={feedSortTitle(sort)}
+        aria-label={feedSortTitle(sort)}
+        className="ml-auto shrink-0 rounded px-0.5 hover:bg-hover hover:text-text"
+      >
+        {feedSortLabel(sort)}
+      </button>
     </div>
   );
 }
@@ -88,13 +197,18 @@ function FeedBlock({
 }) {
   const shown = entry.events.slice(0, MAX_ROWS_PER_BATCH);
   const hidden = entry.events.length - shown.length;
+  const parts = kindCountParts(countByKind(entry.events));
 
   return (
     <div className="border-b border-border px-3 py-2">
       <div className="flex items-baseline justify-between gap-2">
-        <span className="shrink-0 text-xs text-text-muted">{groupLabel(entry.at)}</span>
-        <span className="min-w-0 truncate text-xs text-text-muted">
-          {summarizeBatch(entry.events)}
+        <span className="shrink-0 text-[11px] text-text-muted">{groupLabel(entry.at)}</span>
+        <span className="flex min-w-0 items-center justify-end gap-2 overflow-hidden text-[11px] tabular-nums">
+          {parts.map(({ kind, badge, count }) => (
+            <span key={kind} className={`shrink-0 ${KIND_CLASS[kind]}`}>
+              {badge} {count}
+            </span>
+          ))}
         </span>
       </div>
       <ul className="mt-1 flex flex-col gap-0.5">
@@ -104,10 +218,10 @@ function FeedBlock({
               type="button"
               onClick={() => onSelect(event.path)}
               title={event.path}
-              className="flex w-full items-center gap-2 truncate rounded px-1 py-0.5 text-left text-sm text-text hover:bg-hover"
+              className="flex w-full items-center gap-2 truncate px-1 py-0.5 text-left text-xs text-text-body hover:bg-hover"
             >
               <span
-                className={`w-3 shrink-0 text-center font-mono text-xs ${KIND_CLASS[event.kind]}`}
+                className={`w-3 shrink-0 text-center text-[11px] tabular-nums ${KIND_CLASS[event.kind]}`}
               >
                 {KIND_BADGE[event.kind]}
               </span>
@@ -116,7 +230,7 @@ function FeedBlock({
           </li>
         ))}
       </ul>
-      {hidden > 0 && <p className="mt-1 px-1 text-xs text-text-muted">+{hidden} more</p>}
+      {hidden > 0 && <p className="mt-1 px-1 text-[11px] text-text-muted">+{hidden} more</p>}
     </div>
   );
 }

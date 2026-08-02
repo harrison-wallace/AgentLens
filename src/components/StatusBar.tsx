@@ -1,5 +1,6 @@
 import BranchControl from "./BranchControl";
 import { useConnectionStore } from "../stores/connectionStore";
+import { useFeedStore } from "../stores/feedStore";
 import { useGitStore } from "../stores/gitStore";
 import { useWatcherStore } from "../stores/watcherStore";
 import { countsFor } from "../lib/treeRows";
@@ -60,6 +61,7 @@ export default function StatusBar() {
   const status = useGitStore((s) => s.status);
   const watcher = useWatcherStore((s) => s.status);
   const capabilities = useGitStore((s) => s.capabilities);
+  const sessionTotals = useFeedStore((s) => s.sessionTotals);
   const counts = countsFor(status?.files ?? []);
 
   let branchLabel = "—";
@@ -68,19 +70,31 @@ export default function StatusBar() {
   }
 
   return (
-    <footer className="flex h-7 shrink-0 items-center gap-4 border-t border-border bg-surface-raised px-3 text-xs text-text-muted">
+    <footer className="flex h-7 shrink-0 items-center gap-4 border-t border-border bg-surface-raised px-3 text-[11px] text-text-muted">
       {/* The control replaces the label when mutations are possible; the
           plain label remains for non-repos and read-only fallback. */}
       <BranchControl />
       {!capabilities?.canMutate && <span className="truncate">{branchLabel}</span>}
       {status?.isRepository && (
-        <span className="flex items-center gap-3 font-mono">
+        <span
+          className="flex items-center gap-3 tabular-nums"
+          title="Working tree: modified, added, deleted, untracked"
+        >
           <span className="text-git-modified">M {counts.modified}</span>
           <span className="text-git-added">A {counts.added}</span>
           <span className="text-git-deleted">D {counts.deleted}</span>
           <span className="text-git-untracked">? {counts.untracked}</span>
         </span>
       )}
+      {/* Session running total: file creates/deletes since watch started or Clear.
+          Separate from git A/D — those are the tree right now, not the session. */}
+      <span
+        className="flex items-center gap-3 tabular-nums"
+        title="Session total: files created and deleted since watching started (or last Clear)"
+      >
+        <span className="text-git-added">+ {sessionTotals.created}</span>
+        <span className="text-git-deleted">− {sessionTotals.deleted}</span>
+      </span>
       <span className="ml-auto flex items-center gap-4 overflow-hidden">
         <ConnectionChip />
       </span>

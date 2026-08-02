@@ -28,7 +28,7 @@ export default function Preview() {
 
   if (!path) {
     return (
-      <div className="flex h-full items-center justify-center p-6 text-center text-sm text-text-muted">
+      <div className="flex h-full items-center justify-center p-6 text-center text-xs text-text-muted">
         Select a file to preview it.
       </div>
     );
@@ -36,22 +36,22 @@ export default function Preview() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex shrink-0 items-center gap-1 border-b border-border px-2 py-1">
+      <div className="flex h-7 shrink-0 items-center gap-1 border-b border-border px-2">
         <TabButton active={tab === "current"} onClick={() => void setTab("current")}>
           Current
         </TabButton>
         <TabButton active={tab === "diff"} onClick={() => void setTab("diff")}>
           Diff since session
         </TabButton>
-        <span className="mx-2 min-w-0 flex-1 truncate text-xs text-text-muted" title={path}>
+        <span className="mx-2 min-w-0 flex-1 truncate text-[11px] text-text-muted" title={path}>
           {path}
         </span>
         <OpenExternallyButton path={path} />
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto">
-        {error && <p className="p-4 text-sm text-danger">{error}</p>}
-        {!error && loading && <p className="p-4 text-sm text-text-muted">Loading…</p>}
+        {error && <p className="p-4 text-xs text-danger">{error}</p>}
+        {!error && loading && <p className="p-4 text-xs text-text-muted">Loading…</p>}
         {!error && !loading && tab === "current" && payload && <CurrentTab payload={payload} />}
         {!error && !loading && tab === "diff" && diff && <DiffTab diff={diff} />}
       </div>
@@ -78,7 +78,7 @@ function OpenExternallyButton({ path }: { path: string }) {
       type="button"
       onClick={() => void open()}
       title={failed ? "Could not open this file externally" : undefined}
-      className={`shrink-0 rounded px-2 py-0.5 text-xs hover:bg-hover hover:text-text ${
+      className={`shrink-0 rounded px-2 py-0.5 text-[11px] hover:bg-hover hover:text-text ${
         failed ? "text-danger" : "text-text-muted"
       }`}
     >
@@ -100,7 +100,7 @@ function TabButton({
     <button
       type="button"
       onClick={onClick}
-      className={`shrink-0 rounded px-2 py-0.5 text-xs ${
+      className={`shrink-0 rounded px-2 py-0.5 text-[11px] ${
         active ? "bg-selected text-text" : "text-text-muted hover:bg-hover hover:text-text"
       }`}
     >
@@ -123,13 +123,13 @@ function CurrentTab({ payload }: { payload: PreviewPayload }) {
       );
     case "binary":
       return (
-        <p className="p-4 text-sm text-text-muted">
+        <p className="p-4 text-xs text-text-muted">
           Binary file ({formatBytes(payload.size)}) — nothing to show.
         </p>
       );
     case "tooLarge":
       return (
-        <p className="p-4 text-sm text-text-muted">
+        <p className="p-4 text-xs text-text-muted">
           File is too large to preview ({formatBytes(payload.size)}).
         </p>
       );
@@ -169,13 +169,13 @@ function TextPreview({ text, language }: { text: string; language: string }) {
   };
 
   if (html === null) {
-    return <pre className="p-3 font-mono text-xs leading-relaxed text-text">{text}</pre>;
+    return <pre className="p-3 text-xs leading-relaxed text-text">{text}</pre>;
   }
 
   return (
     <div
       onClick={swallowLinks}
-      className={language === "markdown" ? "markdown-body p-4 text-sm" : "shiki-body p-1 text-xs"}
+      className={language === "markdown" ? "markdown-body p-4" : "shiki-body p-1 text-xs"}
       dangerouslySetInnerHTML={{ __html: html }}
     />
   );
@@ -190,17 +190,17 @@ function DiffTab({ diff }: { diff: SessionDiff }) {
   const summary = useMemo(() => summarizeDiff(rows), [rows]);
 
   const reason = diffUnavailableReason(diff);
-  if (reason) return <p className="p-4 text-sm text-text-muted">{reason}</p>;
+  if (reason) return <p className="p-4 text-xs text-text-muted">{reason}</p>;
 
   if (summary.added === 0 && summary.removed === 0) {
-    return <p className="p-4 text-sm text-text-muted">No changes since the session started.</p>;
+    return <p className="p-4 text-xs text-text-muted">No changes since the session started.</p>;
   }
 
   return (
-    <div className="font-mono text-xs leading-relaxed">
-      <p className="border-b border-border px-3 py-1 text-text-muted">
-        <span className="text-git-added">+{summary.added}</span>{" "}
-        <span className="text-git-deleted">−{summary.removed}</span>
+    <div className="text-xs leading-relaxed">
+      <p className="border-b border-border px-3 py-1 tabular-nums text-text-muted">
+        <span className="text-git-added">+ {summary.added}</span>{" "}
+        <span className="text-git-deleted">− {summary.removed}</span>
       </p>
       {display.map((entry, index) =>
         entry.type === "gap" ? (

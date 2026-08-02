@@ -55,9 +55,9 @@ export default function FolderBrowser() {
   const heading = listing?.path ?? (loading ? `Connecting to ${machine}…` : machine);
 
   return (
-    <div className="mt-3 flex flex-col gap-2 rounded border border-border bg-bg p-3 text-left">
+    <div className="mt-3 flex flex-col gap-2 rounded border border-border bg-surface-raised p-3 text-left">
       <div className="flex items-baseline justify-between gap-2">
-        <span className="min-w-0 flex-1 truncate font-mono text-xs text-text" title={heading}>
+        <span className="min-w-0 flex-1 truncate text-xs text-text" title={heading}>
           {heading}
         </span>
         <button
@@ -74,7 +74,7 @@ export default function FolderBrowser() {
           connect leaves the box (and the reason under it) where the list was
           about to be. */}
       {!listing && (
-        <div className="flex h-48 items-center justify-center rounded border border-border bg-surface text-xs text-text-muted">
+        <div className="flex h-48 items-center justify-center rounded border border-border bg-surface text-[11px] text-text-muted">
           {loading ? "Connecting…" : "Not connected."}
         </div>
       )}
@@ -89,7 +89,7 @@ export default function FolderBrowser() {
             <button
               type="button"
               onClick={() => void go(listing.parent)}
-              className="w-full px-2 py-1 text-left font-mono text-xs text-text-muted hover:bg-hover hover:text-text"
+              className="w-full px-2 py-1 text-left text-xs text-text-muted hover:bg-hover hover:text-text"
             >
               ../
             </button>
@@ -101,13 +101,13 @@ export default function FolderBrowser() {
               type="button"
               onClick={() => void go(entry.path)}
               title={entry.path}
-              className="flex w-full items-center gap-2 px-2 py-1 text-left font-mono text-xs text-text hover:bg-hover"
+              className="flex w-full items-center gap-2 px-2 py-1 text-left text-xs text-text-body hover:bg-hover"
             >
               <span className="min-w-0 flex-1 truncate">{entry.name}/</span>
               {/* Which of twenty directories is the project is the whole
                   question a folder picker exists to answer. */}
               {entry.isRepository && (
-                <span className="shrink-0 text-[10px] text-accent" title="git repository">
+                <span className="shrink-0 text-[11px] text-accent" title="git repository">
                   git
                 </span>
               )}
@@ -115,7 +115,7 @@ export default function FolderBrowser() {
           </li>
         ))}
         {listing && listing.entries.length === 0 && !loading && (
-          <li className="px-2 py-1 text-xs text-text-muted">No sub-folders here.</li>
+          <li className="px-2 py-1 text-[11px] text-text-muted">No sub-folders here.</li>
         )}
       </ul>
 
@@ -126,7 +126,7 @@ export default function FolderBrowser() {
         </p>
       )}
       {error && (
-        <p className="text-xs text-danger" role="alert">
+        <p className="text-[11px] text-danger" role="alert">
           {error}
         </p>
       )}
@@ -135,7 +135,7 @@ export default function FolderBrowser() {
         type="button"
         onClick={choose}
         disabled={!listing || opening}
-        className="rounded border border-accent px-3 py-1 text-xs font-medium text-accent hover:bg-hover disabled:cursor-not-allowed disabled:opacity-40"
+        className="h-7 rounded border border-accent px-3 text-[11px] font-medium text-accent hover:bg-hover disabled:cursor-not-allowed disabled:opacity-40"
       >
         {opening ? "Opening…" : "Open this folder"}
       </button>

@@ -36,32 +36,32 @@ export default function EmptyState() {
   return (
     <div className="flex h-full w-full items-center justify-center overflow-y-auto bg-surface py-10">
       <div className="flex w-80 flex-col items-center text-center">
-        <p className="text-2xl font-semibold tracking-wide text-text">AgentLens</p>
-        {version && <p className="mt-1 text-sm text-text-muted">v{version}</p>}
+        <p className="text-[22px] font-semibold tracking-wide text-text">AgentLens</p>
+        {version && <p className="mt-1 text-[11px] text-text-muted">v{version}</p>}
 
         <button
           type="button"
           onClick={openFolder}
-          className="mt-6 rounded border border-accent px-4 py-2 text-sm font-medium text-accent hover:bg-hover"
+          className="mt-6 h-8 rounded border border-accent px-4 text-xs font-medium text-accent hover:bg-hover"
         >
-          {connection.remote ? `Open folder on ${connection.label}` : "Open folder"}
+          {connection.remote ? `Open folder on ${connection.label}` : "[+] Open folder"}
         </button>
 
-        {error && <p className="mt-3 text-xs text-danger">{error}</p>}
+        {error && <p className="mt-3 text-[11px] text-danger">{error}</p>}
 
         <RemoteOpen />
 
         {recent.length > 0 && (
           <div className="mt-8 w-full text-left">
-            <p className="mb-2 text-xs tracking-wide text-text-muted uppercase">Recent</p>
-            <ul className="flex flex-col gap-1">
+            <p className="section-label mb-2">Recent</p>
+            <ul className="flex flex-col gap-0.5">
               {recent.map((path) => (
                 <li key={path}>
                   <button
                     type="button"
                     onClick={() => void open(path)}
                     title={path}
-                    className="w-full truncate rounded px-2 py-1 text-left text-sm text-text-muted hover:bg-hover hover:text-text"
+                    className="w-full truncate px-2 py-1 text-left text-xs text-text-muted hover:bg-hover hover:text-text"
                   >
                     {path}
                   </button>
@@ -169,19 +169,19 @@ function RemoteForm({ kind, distros }: { kind: "wsl" | "ssh"; distros: string[] 
 
   return (
     <form
-      className="mt-3 flex flex-col gap-2 rounded border border-border bg-bg p-3 text-left"
+      className="mt-3 flex flex-col gap-2 rounded border border-border bg-surface-raised p-3 text-left"
       onSubmit={(event) => {
         event.preventDefault();
         submit();
       }}
     >
       {kind === "wsl" ? (
-        <label className="text-xs text-text-muted">
+        <label className="text-[11px] text-text-muted">
           Distro
           <select
             value={host}
             onChange={(event) => setHost(event.target.value)}
-            className="mt-1 w-full rounded border border-border bg-surface px-2 py-1 text-xs text-text outline-none focus:border-glow"
+            className="mt-1 h-8 w-full rounded border border-border bg-surface px-2 text-xs text-text outline-none focus:border-accent"
           >
             {distros.map((distro) => (
               <option key={distro} value={distro}>
@@ -191,30 +191,30 @@ function RemoteForm({ kind, distros }: { kind: "wsl" | "ssh"; distros: string[] 
           </select>
         </label>
       ) : (
-        <label className="text-xs text-text-muted">
+        <label className="text-[11px] text-text-muted">
           Host
           <input
             value={host}
             onChange={(event) => setHost(event.target.value)}
             placeholder="build-box"
             spellCheck={false}
-            className="mt-1 w-full rounded border border-border bg-surface px-2 py-1 font-mono text-xs text-text outline-none placeholder:text-text-muted focus:border-glow"
+            className="mt-1 h-8 w-full rounded border border-border bg-surface px-2 text-xs text-text outline-none placeholder:text-text-muted focus:border-accent"
           />
-          <span className="mt-1 block text-[11px] text-text-muted">
+          <span className="mt-1 block text-[11px] text-text-ash">
             Any name your <code>ssh</code> command accepts — <code>~/.ssh/config</code> aliases,
             jump hosts and agent auth all apply.
           </span>
         </label>
       )}
 
-      <label className="text-xs text-text-muted">
-        Path <span className="text-[11px]">(optional — or browse for it)</span>
+      <label className="text-[11px] text-text-muted">
+        Path <span className="text-text-ash">(optional — or browse for it)</span>
         <input
           value={path}
           onChange={(event) => setPath(event.target.value)}
           placeholder={kind === "wsl" ? "/home/you/project" : "leave blank for your home directory"}
           spellCheck={false}
-          className="mt-1 w-full rounded border border-border bg-surface px-2 py-1 font-mono text-xs text-text outline-none placeholder:text-text-muted focus:border-glow"
+          className="mt-1 h-8 w-full rounded border border-border bg-surface px-2 text-xs text-text outline-none placeholder:text-text-muted focus:border-accent"
         />
       </label>
 
@@ -225,7 +225,7 @@ function RemoteForm({ kind, distros }: { kind: "wsl" | "ssh"; distros: string[] 
         type="button"
         onClick={() => void startBrowse(target())}
         disabled={!named || opening}
-        className="rounded border border-border px-3 py-1 text-xs font-medium text-text-muted hover:bg-hover hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+        className="h-7 rounded border border-border-strong px-3 text-[11px] font-medium text-text-muted hover:bg-hover hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
       >
         Browse…
       </button>
@@ -233,7 +233,7 @@ function RemoteForm({ kind, distros }: { kind: "wsl" | "ssh"; distros: string[] 
       <button
         type="submit"
         disabled={!canOpen || opening}
-        className="mt-1 rounded border border-accent px-3 py-1 text-xs font-medium text-accent hover:bg-hover disabled:cursor-not-allowed disabled:opacity-40"
+        className="mt-1 h-7 rounded border border-accent px-3 text-[11px] font-medium text-accent hover:bg-hover disabled:cursor-not-allowed disabled:opacity-40"
       >
         {installing ? "Setting up…" : opening ? "Connecting…" : "Open"}
       </button>

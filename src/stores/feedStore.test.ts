@@ -2,8 +2,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { useFeedStore } from "./feedStore";
 import type { FsEvent } from "../lib/protocol";
 
-function change(path: string): FsEvent {
-  return { kind: "modified", path, isDir: false, at: Date.now() };
+function change(path: string, kind: FsEvent["kind"] = "modified"): FsEvent {
+  return { kind, path, isDir: false, at: Date.now() };
 }
 
 describe("feedStore", () => {
@@ -78,5 +78,37 @@ describe("feedStore", () => {
     const entries = useFeedStore.getState().entries;
     expect(entries[0]).toMatchObject({ kind: "gap" });
     expect(entries[1]).toMatchObject({ kind: "batch" });
+  });
+
+  it("accumulates session +/− across batches and resets on clear", () => {
+    const store = useFeedStore.getState();
+    store.addBatch([
+      change("a.ts", "created"),
+      change("b.ts", "created"),
+      change("c.ts", "deleted"),
+      change("d.ts", "modified"),
+    ]);
+    store.addBatch([change("e.ts", "deleted"), change("f.ts", "created")]);
+
+    expect(useFeedStore.getState().sessionTotals).toEqual({ created: 3, deleted: 2 });
+
+    store.clear();
+    expect(useFeedStore.getState().sessionTotals).toEqual({ created: 0, deleted: 0 });
+  });
+
+  it("trims entries when maxEntries is lowered without resetting totals", () => {
+    const store = useFeedStore.getState();
+    // Floor is 50; seed past the cap then lower to the floor.
+    store.setMaxEntries(52);
+    for (let i = 0; i < 55; i += 1) {
+      store.addBatch([change(`f${i}`, i % 2 === 0 ? "created" : "deleted")]);
+    }
+    expect(useFeedStore.getState().entries).toHaveLength(52);
+    const totals = useFeedStore.getState().sessionTotals;
+    expect(totals.created + totals.deleted).toBe(55);
+
+    store.setMaxEntries(50);
+    expect(useFeedStore.getState().entries).toHaveLength(50);
+    expect(useFeedStore.getState().sessionTotals).toEqual(totals);
   });
 });
