@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useFeedStore, type FeedEntry } from "../stores/feedStore";
+import { usePreviewStore } from "../stores/previewStore";
 import { useTreeStore } from "../stores/treeStore";
 import {
   countByKind,
@@ -93,7 +94,14 @@ export default function ActivityFeed() {
             entry.kind === "gap" ? (
               <GapMarker key={entry.id} entry={entry} />
             ) : (
-              <FeedBlock key={entry.id} entry={entry} onSelect={(path) => void revealPath(path)} />
+              <FeedBlock
+                key={entry.id}
+                entry={entry}
+                onSelect={(path) => {
+                  void revealPath(path);
+                  void usePreviewStore.getState().openPermanent(path);
+                }}
+              />
             ),
           )
         )}

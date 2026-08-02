@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { usePreviewStore } from "../stores/previewStore";
+import PreviewTabs from "./PreviewTabs";
+import { usePreviewStore, type PreviewMode } from "../stores/previewStore";
 import {
   collapseContext,
   diffUnavailableReason,
@@ -18,15 +19,17 @@ import type { PreviewPayload, SessionDiff } from "../lib/protocol";
 const DIFF_CONTEXT_LINES = 3;
 
 export default function Preview() {
-  const path = usePreviewStore((s) => s.path);
-  const tab = usePreviewStore((s) => s.tab);
+  const activePath = usePreviewStore((s) => s.activePath);
+  const tabs = usePreviewStore((s) => s.tabs);
   const payload = usePreviewStore((s) => s.payload);
   const diff = usePreviewStore((s) => s.diff);
   const loading = usePreviewStore((s) => s.loading);
   const error = usePreviewStore((s) => s.error);
-  const setTab = usePreviewStore((s) => s.setTab);
+  const setMode = usePreviewStore((s) => s.setMode);
 
-  if (!path) {
+  const mode: PreviewMode = tabs.find((t) => t.path === activePath)?.mode ?? "current";
+
+  if (!activePath) {
     return (
       <div className="flex h-full items-center justify-center p-6 text-center text-xs text-text-muted">
         Select a file to preview it.
@@ -36,24 +39,28 @@ export default function Preview() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
+      <PreviewTabs />
       <div className="flex h-7 shrink-0 items-center gap-1 border-b border-border px-2">
-        <TabButton active={tab === "current"} onClick={() => void setTab("current")}>
+        <ModeButton active={mode === "current"} onClick={() => void setMode("current")}>
           Current
-        </TabButton>
-        <TabButton active={tab === "diff"} onClick={() => void setTab("diff")}>
+        </ModeButton>
+        <ModeButton active={mode === "diff"} onClick={() => void setMode("diff")}>
           Diff since session
-        </TabButton>
-        <span className="mx-2 min-w-0 flex-1 truncate text-[11px] text-text-muted" title={path}>
-          {path}
+        </ModeButton>
+        <span
+          className="mx-2 min-w-0 flex-1 truncate text-[11px] text-text-muted"
+          title={activePath}
+        >
+          {activePath}
         </span>
-        <OpenExternallyButton path={path} />
+        <OpenExternallyButton path={activePath} />
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto">
         {error && <p className="p-4 text-xs text-danger">{error}</p>}
         {!error && loading && <p className="p-4 text-xs text-text-muted">Loading…</p>}
-        {!error && !loading && tab === "current" && payload && <CurrentTab payload={payload} />}
-        {!error && !loading && tab === "diff" && diff && <DiffTab diff={diff} />}
+        {!error && !loading && mode === "current" && payload && <CurrentView payload={payload} />}
+        {!error && !loading && mode === "diff" && diff && <DiffView diff={diff} />}
       </div>
     </div>
   );
@@ -87,7 +94,7 @@ function OpenExternallyButton({ path }: { path: string }) {
   );
 }
 
-function TabButton({
+function ModeButton({
   active,
   onClick,
   children,
@@ -109,7 +116,7 @@ function TabButton({
   );
 }
 
-function CurrentTab({ payload }: { payload: PreviewPayload }) {
+function CurrentView({ payload }: { payload: PreviewPayload }) {
   switch (payload.kind) {
     case "image":
       return (
@@ -181,7 +188,7 @@ function TextPreview({ text, language }: { text: string; language: string }) {
   );
 }
 
-function DiffTab({ diff }: { diff: SessionDiff }) {
+function DiffView({ diff }: { diff: SessionDiff }) {
   const rows = useMemo(() => toDiffRows(diff.baseline, diff.current), [diff]);
   const { display, truncated } = useMemo(
     () => truncateDisplay(collapseContext(rows, DIFF_CONTEXT_LINES), MAX_DIFF_ROWS),

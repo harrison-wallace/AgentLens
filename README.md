@@ -6,7 +6,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/harrison-wallace/AgentLens/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/harrison-wallace/AgentLens/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/actions/workflow/status/harrison-wallace/AgentLens/release.yml?style=flat-square&label=release)](https://github.com/harrison-wallace/AgentLens/actions/workflows/release.yml)
-[![Version](https://img.shields.io/badge/version-0.4.0-6366f1?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.5.0-6366f1?style=flat-square)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 
 [![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app)
@@ -20,11 +20,11 @@ read-only window into what your terminal coding agent (Claude Code, opencode,
 …) is doing to a directory: live file tree, change feed, git status,
 read-only previews. Runs on Windows and Ubuntu.
 
-**Status:** v0.4.0 — the MVP feature set is complete, including remote
+**Status:** v0.5.0 — the MVP feature set is complete, including remote
 workspaces over WSL and SSH with no manual setup on the remote machine. Still
 pre-alpha: acceptance testing on Windows and Ubuntu is outstanding.
 
-![AgentLens v0.3.0 — file tree, preview, activity feed, and status bar](docs/images/v0-3-0.png)
+![AgentLens v0.5.0 — file tree, preview tabs, activity feed, and status bar](docs/images/v0-5-0.png)
 
 ## What works today
 
@@ -53,6 +53,11 @@ pre-alpha: acceptance testing on Windows and Ubuntu is outstanding.
   stdio: no ports, no tunnels, and SSH auth is your own `ssh` binary's. If the
   machine has never run AgentLens, the app installs the daemon there itself.
   See [docs/REMOTE.md](docs/REMOTE.md).
+- **Preview tabs** — several files open at once, VS Code-style: single-click
+  opens a preview tab (replaced by the next click), double-click or Enter
+  keeps it; feed / git / `Ctrl+P` jumps open permanent tabs. `Ctrl+Tab` /
+  `Ctrl+Shift+Tab` cycle, `Ctrl+W` closes, middle-click closes a tab. Open set
+  is remembered per workspace; tree rows show a dot when open.
 - **`Ctrl+P` file jump**, **`F11` fullscreen**, **`Ctrl` `+`/`−`/`0` zoom**
   (with an independent preview text size), arrow-key tree navigation,
   resizable and collapsible panels, and per-workspace extra ignore globs.

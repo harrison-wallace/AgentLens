@@ -10,6 +10,7 @@ import Splitter from "./components/Splitter";
 import StatusBar from "./components/StatusBar";
 import WorkspaceHeader from "./components/WorkspaceHeader";
 import { onConnection, onFsChanges, onGitStatus, onWatcherStatus } from "./lib/events";
+import { formatLocation } from "./lib/location";
 import { quickPickOpen } from "./lib/quickPick";
 import { useAppearanceStore } from "./stores/appearanceStore";
 import { useConnectionStore } from "./stores/connectionStore";
@@ -23,12 +24,28 @@ import { useTreeStore } from "./stores/treeStore";
 import { useWatcherStore } from "./stores/watcherStore";
 import { useWorkspaceStore } from "./stores/workspaceStore";
 
+/** True when the event target is a field the user is typing in — chrome
+ * shortcuts like Ctrl+W must not steal those keystrokes. */
+function isEditableKeyTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  const tag = target.tagName;
+  if (tag === "TEXTAREA" || tag === "SELECT") return true;
+  if (tag === "INPUT") {
+    const type = (target as HTMLInputElement).type;
+    // Buttons and similar are not typing surfaces.
+    return !["button", "checkbox", "radio", "submit", "reset", "file", "range", "color"].includes(
+      type,
+    );
+  }
+  return target.closest("textarea, select, input:not([type=button]):not([type=checkbox])") !== null;
+}
+
 export default function App() {
   const workspace = useWorkspaceStore((s) => s.workspace);
   const restore = useWorkspaceStore((s) => s.restore);
   const loadRecent = useWorkspaceStore((s) => s.loadRecent);
-  const selected = useTreeStore((s) => s.selected);
-  const selectedIsDir = useTreeStore((s) => s.selectedIsDir);
+  const connectionTarget = useConnectionStore((s) => s.info.target);
   const treeWidth = useLayoutStore((s) => s.treeWidth);
   const feedWidth = useLayoutStore((s) => s.feedWidth);
   const treeCollapsed = useLayoutStore((s) => s.treeCollapsed);
@@ -56,12 +73,10 @@ export default function App() {
       useFeedStore.getState().addBatch(events);
       useTreeStore.getState().applyFsChanges(events);
 
-      // The open file may be one of the ones that just changed; re-read it
-      // rather than leaving a stale preview on screen.
-      const open = usePreviewStore.getState().path;
-      if (open && events.some((event) => event.path === open)) {
-        void usePreviewStore.getState().refresh();
-      }
+      // Drop cached previews for paths that changed; re-read the active tab
+      // when it is among them so the pane does not go stale.
+      const paths = events.map((event) => event.path);
+      usePreviewStore.getState().invalidate(paths);
     });
     const gitStatus = onGitStatus((snapshot) => {
       useGitStore.getState().applySnapshot(snapshot);
@@ -103,11 +118,12 @@ export default function App() {
   }, []);
 
   // Global chrome keys: `Ctrl+P` file jump, `F11` native fullscreen,
-  // `Ctrl +/-/0` zoom. Fullscreen is not free in a Tauri window the way it is
-  // in a browser tab — the webview never owns the shell, so the app has to
-  // call the window API. Zoom is handled here rather than by Tauri's
-  // `zoomHotkeysEnabled` polyfill, which has no reset, no persistence, and
-  // would fight this handler for the same keys.
+  // `Ctrl +/-/0` zoom, `Ctrl+W` close tab, `Ctrl+Tab` cycle tabs.
+  // Fullscreen is not free in a Tauri window the way it is in a browser tab —
+  // the webview never owns the shell, so the app has to call the window API.
+  // Zoom is handled here rather than by Tauri's `zoomHotkeysEnabled` polyfill,
+  // which has no reset, no persistence, and would fight this handler for the
+  // same keys.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "F11") {
@@ -140,6 +156,22 @@ export default function App() {
         return;
       }
 
+      // Tab chrome: stay out of text fields (commit box, settings, etc.).
+      if (event.key === "Tab") {
+        if (isEditableKeyTarget(event.target)) return;
+        event.preventDefault();
+        if (event.shiftKey) void usePreviewStore.getState().prevTab();
+        else void usePreviewStore.getState().nextTab();
+        return;
+      }
+
+      if (event.key.toLowerCase() === "w") {
+        if (isEditableKeyTarget(event.target)) return;
+        event.preventDefault();
+        void usePreviewStore.getState().closeActive();
+        return;
+      }
+
       if (event.key.toLowerCase() !== "p") return;
       // Don't stack the palette on top of another modal, or re-open (and so
       // reset) the one already showing — including the branch picker, which
@@ -160,7 +192,6 @@ export default function App() {
     useGitStore.getState().reset();
     useFeedStore.getState().clear();
     useWatcherStore.getState().reset();
-    usePreviewStore.getState().reset();
     usePaletteStore.getState().reset();
     useSettingsStore.getState().reset();
     if (workspace) {
@@ -173,13 +204,18 @@ export default function App() {
     }
   }, [workspace]);
 
-  // Selecting a directory moves the tree cursor but has nothing to preview,
-  // so the pane keeps showing whatever file was open.
+  // Open tabs are keyed by full location (scheme + host/distro + root), not
+  // root alone — `/home/h/proj` on two SSH hosts must not share a tab set.
+  // Separate from the workspace effect so a connection refresh after restore
+  // can re-bind without wiping the tree.
+  const tabsLocationKey = workspace ? formatLocation(connectionTarget, workspace.root) : null;
   useEffect(() => {
-    if (selected && !selectedIsDir) {
-      void usePreviewStore.getState().load(selected);
+    if (tabsLocationKey) {
+      void usePreviewStore.getState().bindWorkspace(tabsLocationKey);
+    } else {
+      usePreviewStore.getState().reset();
     }
-  }, [selected, selectedIsDir]);
+  }, [tabsLocationKey]);
 
   if (!workspace) {
     return <EmptyState />;

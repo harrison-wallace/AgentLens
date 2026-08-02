@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-02
+
+VS Code-style preview tabs so several files stay open while watching an agent.
+
+### Added
+
+- **Preview tabs** — open multiple files in the preview pane. Single-click /
+  arrow opens a preview tab (italic, replaced by the next); double-click or
+  Enter keeps it permanent. Feed, git, pin, and `Ctrl+P` jumps open permanent
+  tabs. `Ctrl+Tab` / `Ctrl+Shift+Tab` cycle, `Ctrl+W` closes, middle-click
+  closes a tab. Current / Diff remain modes of the active file.
+- **Open-set persistence** — tabs (and active file / mode) are remembered per
+  workspace location (`local` path, `wsl://…`, `ssh://…`), not bare root alone.
+- **Tree open dots** — a small accent mark on files that have a tab open.
+- **Payload cache** — switching tabs reuses the last loaded content instead of
+  re-fetching every time.
+- **App screenshot** updated (`docs/images/v0-5-0.png`).
+
+### Fixed
+
+- `Ctrl+W` / `Ctrl+Tab` no longer fire while typing in inputs (commit box,
+  settings, etc.).
+
 ## [0.4.0] - 2026-08-02
 
 Zoom, a type-to-filter branch picker, and tree decorations that surface changes

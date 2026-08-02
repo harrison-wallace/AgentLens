@@ -1,26 +1,6 @@
 import { useBrowseStore } from "../stores/browseStore";
 import { useWorkspaceStore } from "../stores/workspaceStore";
-import type { ConnectionTarget } from "../lib/protocol";
-
-/**
- * Build the location string for a directory on `target`.
- *
- * The picker deals in absolute paths on the remote, but `openWorkspace` reads
- * a bare path as "this machine" — so handing it one straight from the listing
- * would silently switch back to local and open a directory that probably
- * doesn't exist here.
- */
-function locationOf(target: ConnectionTarget, path: string): string {
-  const suffix = path.startsWith("/") ? path : `/${path}`;
-  switch (target.kind) {
-    case "local":
-      return path;
-    case "wsl":
-      return `wsl://${target.distro}${suffix}`;
-    case "ssh":
-      return `ssh://${target.host}${suffix}`;
-  }
-}
+import { formatLocation } from "../lib/location";
 
 /**
  * Choosing a directory on a machine you aren't sitting at.
@@ -44,7 +24,7 @@ export default function FolderBrowser() {
   const choose = () => {
     if (!listing) return;
     close();
-    void open(locationOf(target, listing.path));
+    void open(formatLocation(target, listing.path));
   };
 
   // Until a listing lands there is no path to show, so the machine's own name

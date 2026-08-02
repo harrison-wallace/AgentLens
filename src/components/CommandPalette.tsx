@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import QuickPick, { type QuickPickItem } from "./QuickPick";
 import { usePaletteStore } from "../stores/paletteStore";
+import { usePreviewStore } from "../stores/previewStore";
 import { useTreeStore } from "../stores/treeStore";
 import { fuzzyFilter } from "../lib/fuzzy";
 
@@ -25,6 +26,8 @@ export default function CommandPalette() {
         onChoose: () => {
           hide();
           void useTreeStore.getState().revealPath(result.path);
+          // Jump targets are intentional: keep a permanent tab, like VS Code.
+          void usePreviewStore.getState().openPermanent(result.path);
         },
       })),
     [results, hide],

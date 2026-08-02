@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useGitStore } from "../stores/gitStore";
+import { usePreviewStore } from "../stores/previewStore";
 import { useSettingsStore } from "../stores/settingsStore";
 import { useTreeStore } from "../stores/treeStore";
 import { flattenTree, gitBadgeFor, rollUpHidden, type TreeRow } from "../lib/treeRows";
@@ -35,11 +36,25 @@ export default function FileTree() {
   const select = useTreeStore((s) => s.select);
   const recentlyChanged = useTreeStore((s) => s.recentlyChanged);
   const statusByPath = useGitStore((s) => s.statusByPath);
+  const openTabs = usePreviewStore((s) => s.tabs);
+  const openPaths = useMemo(() => new Set(openTabs.map((t) => t.path)), [openTabs]);
   const pinnedPaths = useSettingsStore((s) => s.settings.pinned);
   const togglePin = useSettingsStore((s) => s.togglePin);
 
   const collapse = useTreeStore((s) => s.collapse);
   const parentRef = useRef<HTMLDivElement>(null);
+
+  /** Tree cursor + VS Code-style preview open (single-click / arrow). */
+  const selectFilePreview = (path: string) => {
+    select(path, false);
+    void usePreviewStore.getState().openPreview(path);
+  };
+
+  /** Keep the tab (double-click / Enter). */
+  const selectFilePermanent = (path: string) => {
+    select(path, false);
+    void usePreviewStore.getState().openPermanent(path);
+  };
 
   // One timer for the whole tree, not one per row: sweep expired glows on an
   // interval rather than scheduling a timeout per changed path.
@@ -112,7 +127,8 @@ export default function FileTree() {
     if (next === undefined) return;
     const target = displayRows[next];
     if (target?.kind !== "node") return;
-    select(target.row.path, target.row.isDir);
+    if (target.row.isDir) select(target.row.path, true);
+    else selectFilePreview(target.row.path);
   };
 
   const onKeyDown = (event: React.KeyboardEvent) => {
@@ -147,7 +163,7 @@ export default function FileTree() {
       case "Enter":
         event.preventDefault();
         if (row?.isDir) toggle(row.path);
-        else if (row) select(row.path, false);
+        else if (row) selectFilePermanent(row.path);
         break;
       // Bare `p`: the tree is not a text field, and `Ctrl+P` is the file jump.
       case "p":
@@ -207,6 +223,7 @@ export default function FileTree() {
             const isExpanded = row.isDir && expanded.has(row.path);
             const isLoading = row.isDir && loading.has(row.path);
             const isSelected = selected === row.path;
+            const isOpen = !row.isDir && openPaths.has(row.path);
             const isRecentlyChanged = row.path in recentlyChanged;
             const isPinned = pinned.has(row.path);
             const statusKind = statusByPath[row.path];
@@ -224,8 +241,15 @@ export default function FileTree() {
                 aria-selected={isSelected}
                 aria-expanded={row.isDir ? isExpanded : undefined}
                 onClick={() => {
-                  select(row.path, row.isDir);
-                  if (row.isDir) toggle(row.path);
+                  if (row.isDir) {
+                    select(row.path, true);
+                    toggle(row.path);
+                  } else {
+                    selectFilePreview(row.path);
+                  }
+                }}
+                onDoubleClick={() => {
+                  if (!row.isDir) selectFilePermanent(row.path);
                 }}
                 title={row.path}
                 style={{ ...commonStyle, paddingLeft: row.depth * 14 + 8 }}
@@ -258,6 +282,15 @@ export default function FileTree() {
                 >
                   {row.name}
                 </span>
+                {isOpen && (
+                  <span
+                    className="shrink-0 text-[9px] text-accent"
+                    title="Open in preview"
+                    aria-label="Open in preview"
+                  >
+                    ●
+                  </span>
+                )}
                 {row.agentContext && (
                   <span
                     className="shrink-0 text-[11px] text-accent"
@@ -355,6 +388,7 @@ function PinnedGroup() {
     // Expanding the ancestors is what makes a pinned directory usable: the
     // group is a shortcut into the tree, not a second tree.
     void useTreeStore.getState().revealPath(entry.path, entry.isDir);
+    if (!entry.isDir) void usePreviewStore.getState().openPermanent(entry.path);
   };
 
   return (

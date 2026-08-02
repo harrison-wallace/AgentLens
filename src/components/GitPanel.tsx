@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useGitStore } from "../stores/gitStore";
+import { usePreviewStore } from "../stores/previewStore";
 import { useTreeStore } from "../stores/treeStore";
 import type { GitFileStatus, GitStatusKind } from "../lib/protocol";
 
@@ -204,7 +205,10 @@ function FileGroup({
               </span>
               <button
                 type="button"
-                onClick={() => void useTreeStore.getState().revealPath(file.path)}
+                onClick={() => {
+                  void useTreeStore.getState().revealPath(file.path);
+                  void usePreviewStore.getState().openPermanent(file.path);
+                }}
                 title={file.path}
                 className="min-w-0 flex-1 truncate text-left text-text-body"
               >

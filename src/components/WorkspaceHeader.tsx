@@ -38,8 +38,10 @@ export default function WorkspaceHeader() {
     await restart();
     useFeedStore.getState().clear();
     useTreeStore.getState().clearGlow();
-    // The diff tab is measured against the session baseline, which just moved.
-    await usePreviewStore.getState().refresh();
+    // Diff mode is measured against the session baseline, which just moved —
+    // drop every cached preview so each tab re-reads when focused.
+    const open = usePreviewStore.getState().tabs.map((t) => t.path);
+    usePreviewStore.getState().invalidate(open);
   };
 
   return (
