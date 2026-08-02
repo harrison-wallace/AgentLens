@@ -322,13 +322,22 @@ fn remote_shell(target: &ConnectionTarget, script: &str) -> Option<(String, Vec<
 /// bootstrap `exec`s the daemon it would inherit the closed pipe instead of
 /// the protocol stdio from `wsl.exe` / `ssh` ("lost the connection").
 ///
+/// The wrapper itself must contain **no `$…` expansions**. Even after packing
+/// the payload, a one-liner like `t=…; … >"$t"` still died on WSL with
+/// `cannot create : Directory nonexistent` because `$t` / `$$` were stripped
+/// on the Windows→WSL boundary. The temp path is therefore a fixed name with
+/// a Rust-chosen unique suffix.
+///
 /// The alphabet has no `'`, so single-quoting the payload is safe. GNU
 /// coreutils and busybox both accept `base64 -d`.
 fn pack_script(script: &str) -> String {
     let b64 = base64_encode(script.as_bytes());
-    format!(
-        "t=\"${{TMPDIR:-/tmp}}/agentlens-run.$$\"; printf '%s' '{b64}' | base64 -d >\"$t\" && exec sh \"$t\""
-    )
+    let id = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let path = format!("/tmp/agentlens-run-{id}");
+    format!("printf '%s' '{b64}' | base64 -d > {path} && exec sh {path}")
 }
 
 fn base64_encode(input: &[u8]) -> String {
@@ -521,8 +530,9 @@ mod tests {
         assert_eq!(program, "wsl.exe");
         assert_eq!(args[..5], ["-d", "Ubuntu-22.04", "--", "sh", "-c"]);
         // Packed so `$HOME` etc. never sit in the Windows→WSL command line.
-        assert_eq!(args[5], pack_script(&bootstrap("0.1.0")));
         assert!(args[5].contains("base64 -d"), "{}", args[5]);
+        assert!(args[5].contains("exec sh"), "{}", args[5]);
+        assert!(!args[5].contains('$'), "no `$` in wrapper: {}", args[5]);
     }
 
     #[test]
@@ -530,10 +540,9 @@ mod tests {
         let (program, args) = spawn_spec(&ssh("box"), "", "0.1.0").unwrap();
         assert_eq!(program, "ssh");
         assert_eq!(args[0], "box");
-        assert_eq!(
-            args[1],
-            format!("sh -c {}", shell_quote(&pack_script(&bootstrap("0.1.0"))))
-        );
+        assert!(args[1].starts_with("sh -c '"), "{}", args[1]);
+        assert!(args[1].contains("base64 -d"), "{}", args[1]);
+        assert!(args[1].contains("exec sh"), "{}", args[1]);
     }
 
     #[test]
@@ -543,11 +552,12 @@ mod tests {
         // reasons as the bootstrap.
         let (_, args) =
             spawn_spec(&ssh("box"), "/opt/my daemons/agentlens-daemon", "0.1.0").unwrap();
-        let inner = pack_script("exec '/opt/my daemons/agentlens-daemon' --stdio");
-        assert_eq!(args[1], format!("sh -c {}", shell_quote(&inner)));
-
+        assert!(args[1].contains("base64 -d"), "{}", args[1]);
+        // The quoted path is inside the base64 payload, not the wrapper.
         let (_, args) = spawn_spec(&wsl("Ubuntu"), "/opt/daemon", "0.1.0").unwrap();
-        assert_eq!(args[5], pack_script("exec '/opt/daemon' --stdio"));
+        assert!(args[5].contains("base64 -d"), "{}", args[5]);
+        assert!(args[5].contains("exec sh"), "{}", args[5]);
+        assert!(!args[5].contains('$'), "{}", args[5]);
     }
 
     #[test]
@@ -564,9 +574,10 @@ mod tests {
             packed.contains("exec sh"),
             "must exec so the daemon inherits protocol stdio: {packed}"
         );
+        // No shell `$` in the wrapper — only inside the base64 payload.
         assert!(
-            !packed.contains("$HOME"),
-            "payload must not leak into the wrapper: {packed}"
+            !packed.contains('$'),
+            "wrapper must not contain `$` (Windows→WSL strips them): {packed}"
         );
     }
 
