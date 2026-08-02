@@ -141,8 +141,14 @@ mod tests {
 
         let listing = list(Some(&child.to_string_lossy())).unwrap();
 
-        assert_eq!(listing.parent, Some(normalize_absolute(dir.path())));
-        assert_eq!(listing.path, normalize_absolute(&child));
+        // Canonicalized on both sides. Listings are canonical by design — a
+        // picker wants the real path, not whatever alias it was reached
+        // through — and on Windows `tempdir()` hands back an 8.3 short name
+        // (`RUNNER~1`) that canonicalizing expands (`runneradmin`), so
+        // comparing against the raw path passes on Linux and fails there.
+        let canonical = |path: &std::path::Path| normalize_absolute(&path.canonicalize().unwrap());
+        assert_eq!(listing.parent, Some(canonical(dir.path())));
+        assert_eq!(listing.path, canonical(&child));
     }
 
     #[test]
