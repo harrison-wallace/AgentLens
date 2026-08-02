@@ -2,7 +2,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/harrison-wallace/AgentLens/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/harrison-wallace/AgentLens/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/actions/workflow/status/harrison-wallace/AgentLens/release.yml?style=flat-square&label=release)](https://github.com/harrison-wallace/AgentLens/actions/workflows/release.yml)
-[![Version](https://img.shields.io/badge/version-0.3.0-6366f1?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.3.1-6366f1?style=flat-square)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 
 [![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app)
@@ -16,11 +16,11 @@ read-only window into what your terminal coding agent (Claude Code, opencode,
 …) is doing to a directory: live file tree, change feed, git status,
 read-only previews. Runs on Windows and Ubuntu.
 
-**Status:** v0.3.0 — the MVP feature set is complete, including remote
+**Status:** v0.3.1 — the MVP feature set is complete, including remote
 workspaces over WSL and SSH with no manual setup on the remote machine. Still
 pre-alpha: acceptance testing on Windows and Ubuntu is outstanding.
 
-<!-- TODO: screenshot once Phase 1 (local observer) lands -->
+![AgentLens v0.3.0 — file tree, preview, activity feed, and status bar](docs/images/v0-3-0.png)
 
 ## What works today
 
@@ -30,7 +30,6 @@ pre-alpha: acceptance testing on Windows and Ubuntu is outstanding.
   and sort from the toolbar, click a row to reveal it in the tree. An
   `npm install` produces no feed spam. Session +/− totals live in the status
   bar.
-
 - **Read-only preview** — syntax-highlighted code, images, rendered markdown,
   with a size guard and an "open externally" escape hatch.
 - **Diff since session** — what changed in a file since you started watching,
@@ -50,8 +49,8 @@ pre-alpha: acceptance testing on Windows and Ubuntu is outstanding.
   stdio: no ports, no tunnels, and SSH auth is your own `ssh` binary's. If the
   machine has never run AgentLens, the app installs the daemon there itself.
   See [docs/REMOTE.md](docs/REMOTE.md).
-- **`Ctrl+P` file jump**, arrow-key tree navigation, resizable and
-  collapsible panels, and per-workspace extra ignore globs.
+- **`Ctrl+P` file jump**, **`F11` fullscreen**, arrow-key tree navigation,
+  resizable and collapsible panels, and per-workspace extra ignore globs.
 
 ## Why not VS Code / a file explorer
 
@@ -151,6 +150,9 @@ actually are (a WSL distro, an SSH host) and streams to the UI. The app talks
 to both through one `Backend` trait and cannot tell them apart —
 see [docs/PROTOCOL.md](docs/PROTOCOL.md) for the wire format and the
 versioning policy.
+
+UI tokens and chrome conventions live in [DESIGN.md](DESIGN.md) (dark mono
+TUI dialect).
 
 ## Contributing
 

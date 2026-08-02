@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-02
+
+### Added
+
+- **App screenshot** in the README (`docs/images/v0-3-0.png`).
+
+### Changed
+
+- README: document `F11` fullscreen, link [DESIGN.md](DESIGN.md) from Architecture.
+
 ## [0.3.0] - 2026-08-02
 
 Terminal-native UI redesign, a controllable activity feed, and session +/− in
