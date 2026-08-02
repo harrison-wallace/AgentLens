@@ -5,6 +5,7 @@ import type {
   AppInfo,
   AppSettings,
   BranchList,
+  ConnectionInfo,
   DirEntryNode,
   GitCapabilities,
   GitStatusSnapshot,
@@ -21,8 +22,33 @@ export function getAppInfo(): Promise<AppInfo> {
   return invoke<AppInfo>("get_app_info");
 }
 
+/**
+ * Open a workspace. `path` may be a plain path or a location naming another
+ * machine (`wsl://Ubuntu/home/h/proj`, `ssh://box/srv/app`) — the backend
+ * connects there first, which is what makes a recent-workspaces entry
+ * reopenable a week later.
+ */
 export function openWorkspace(path: string): Promise<WorkspaceInfo> {
   return invoke<WorkspaceInfo>("open_workspace", { path });
+}
+
+/** The backend currently in use, and whether it is reachable. */
+export function connection(): Promise<ConnectionInfo> {
+  return invoke<ConnectionInfo>("connection");
+}
+
+/**
+ * Back to observing this machine, in-process. There is no matching `connect`:
+ * opening a location is what points the app at another machine, so connecting
+ * on its own would only ever land somewhere with nothing to show.
+ */
+export function disconnect(): Promise<ConnectionInfo> {
+  return invoke<ConnectionInfo>("disconnect");
+}
+
+/** WSL distros on this machine; empty anywhere that isn't Windows with WSL. */
+export function wslDistros(): Promise<string[]> {
+  return invoke<string[]>("wsl_distros");
 }
 
 export function closeWorkspace(): Promise<void> {

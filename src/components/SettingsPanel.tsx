@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useConnectionStore } from "../stores/connectionStore";
 import { useSettingsStore } from "../stores/settingsStore";
 import type { AgentKind } from "../lib/protocol";
 
@@ -98,6 +99,10 @@ export default function SettingsPanel() {
           <AgentRoots />
         </Section>
 
+        <Section title="Remote">
+          <DaemonCommand />
+        </Section>
+
         {error && (
           <p className="border-t border-border px-4 py-2 text-xs text-danger" role="alert">
             {error}
@@ -166,6 +171,44 @@ function AgentRoots() {
   );
 }
 
+/**
+ * What AgentLens runs on the far side of a WSL or SSH connection.
+ *
+ * This exists because of one specific, very common failure: `ssh host cmd`
+ * runs without a login shell, so `~/.local/bin` is usually not on `PATH` and
+ * a perfectly well-installed daemon reports "command not found". An absolute
+ * path here is the fix, and only the user knows where they put it.
+ */
+function DaemonCommand() {
+  const command = useSettingsStore((s) => s.app.daemonCommand);
+  const setDaemonCommand = useSettingsStore((s) => s.setDaemonCommand);
+  const connection = useConnectionStore((s) => s.info);
+
+  return (
+    <div>
+      <label className="block text-xs font-medium text-text" htmlFor="daemon-command">
+        Daemon command
+      </label>
+      <p className="text-xs text-text-muted">
+        Run on the remote machine to start the observer. Use an absolute path if it is not on the
+        non-interactive <code>PATH</code>. Applies to the next connection.
+      </p>
+      <TextField
+        id="daemon-command"
+        placeholder="agentlens-daemon"
+        value={command}
+        onCommit={(value) => void setDaemonCommand(value)}
+      />
+      {connection.remote && (
+        <p className="mt-1.5 text-xs text-text-muted">
+          Connected to {connection.label}
+          {connection.daemonVersion ? ` · daemon v${connection.daemonVersion}` : ""}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="border-b border-border px-4 py-3 last:border-b-0">
@@ -205,6 +248,41 @@ function Toggle({
         className="mt-0.5 h-4 w-4 shrink-0 accent-accent"
       />
     </label>
+  );
+}
+
+/** A single-line value, committed on blur for the same reason as `TextRows`. */
+function TextField({
+  id,
+  placeholder,
+  value,
+  onCommit,
+}: {
+  id: string;
+  placeholder: string;
+  value: string;
+  onCommit: (value: string) => void;
+}) {
+  const ref = useRef<HTMLInputElement>(null);
+  const [text, setText] = useState(value);
+
+  useEffect(() => {
+    if (ref.current !== document.activeElement) setText(value);
+  }, [value]);
+
+  return (
+    <input
+      id={id}
+      ref={ref}
+      value={text}
+      onChange={(event) => setText(event.target.value)}
+      onBlur={() => {
+        if (text.trim() !== value) onCommit(text);
+      }}
+      spellCheck={false}
+      placeholder={placeholder}
+      className="mt-1.5 w-full rounded border border-border bg-bg p-2 font-mono text-xs text-text outline-none placeholder:text-text-muted focus:border-glow"
+    />
   );
 }
 

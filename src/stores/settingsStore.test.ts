@@ -8,7 +8,7 @@ import type { AppSettings, WorkspaceSettings } from "../lib/protocol";
  */
 const backend = {
   workspace: { extraIgnores: [], showIgnored: false, pinned: [] } as WorkspaceSettings,
-  app: { showAgentContext: true, agentRoots: [] } as AppSettings,
+  app: { showAgentContext: true, agentRoots: [], daemonCommand: "agentlens-daemon" } as AppSettings,
 };
 
 vi.mock("../lib/tauri", () => ({
@@ -43,10 +43,10 @@ const { useSettingsStore } = await import("./settingsStore");
 describe("settingsStore", () => {
   beforeEach(() => {
     backend.workspace = { extraIgnores: [], showIgnored: false, pinned: [] };
-    backend.app = { showAgentContext: true, agentRoots: [] };
+    backend.app = { showAgentContext: true, agentRoots: [], daemonCommand: "agentlens-daemon" };
     useSettingsStore.setState({
       settings: { extraIgnores: [], showIgnored: false, pinned: [] },
-      app: { showAgentContext: true, agentRoots: [] },
+      app: { showAgentContext: true, agentRoots: [], daemonCommand: "agentlens-daemon" },
       pins: [],
       error: null,
       saving: false,
@@ -74,7 +74,11 @@ describe("settingsStore", () => {
     await useSettingsStore.getState().togglePin("notes.md");
     await useSettingsStore.getState().toggleShowAgentContext();
 
-    expect(backend.app).toEqual({ showAgentContext: false, agentRoots: [] });
+    expect(backend.app).toEqual({
+      showAgentContext: false,
+      agentRoots: [],
+      daemonCommand: "agentlens-daemon",
+    });
     // The workspace write must not have carried the app setting with it.
     expect(backend.workspace.pinned).toEqual(["notes.md"]);
     expect(useSettingsStore.getState().app.showAgentContext).toBe(false);

@@ -1,0 +1,18 @@
+[package]
+name = "agentlens-daemon"
+version = "0.1.0"
+description = "Headless AgentLens observer, spoken to over stdio — runs where the files are"
+authors = ["Harrison Wallace"]
+license = "MIT"
+edition = "2021"
+
+[[bin]]
+name = "agentlens-daemon"
+path = "src/main.rs"
+
+[dependencies]
+agentlens-core = { path = "../core" }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"

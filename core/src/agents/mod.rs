@@ -16,30 +16,8 @@
 pub mod claude;
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 use crate::protocol::{AgentEvent, AgentKind, AgentRootInfo, SessionRef};
-
-/// Tauri-managed state holding the providers. They own their read offsets, so
-/// they have to outlive a single command call — a fresh provider each time
-/// would re-tail from the end and never report anything.
-///
-/// They must **not** outlive the workspace, though: see `reset`.
-#[derive(Default)]
-pub struct AgentState(pub Mutex<claude::ClaudeCode>);
-
-/// Drop every read offset and parse tally (workspace opened or closed).
-///
-/// Both are per-workspace facts held in app-lifetime state, so without this
-/// they leak across a workspace switch: the "couldn't parse N records" counter
-/// would report another workspace's totals, and reopening a workspace would
-/// resume from the offset it had on close — replaying everything appended in
-/// between, which is exactly what starting at the end is meant to prevent.
-pub fn reset(state: &AgentState) -> Result<(), String> {
-    let mut guard = state.0.lock().map_err(|_| "agent state poisoned")?;
-    *guard = claude::ClaudeCode::new();
-    Ok(())
-}
 
 /// Every provider the app ships. One place to add the next agent.
 pub fn providers() -> Vec<Box<dyn AgentProvider>> {
@@ -211,6 +189,7 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::claude::ClaudeCode;
 
     /// A directory with the shape of a Claude Code profile.
     fn profile_dir(parent: &Path, name: &str) -> PathBuf {
@@ -238,18 +217,16 @@ mod tests {
             last_activity: 0,
         };
 
-        let state = AgentState::default();
+        let mut provider = ClaudeCode::new();
         {
-            let mut provider = state.0.lock().unwrap();
             provider.poll(workspace, &session, &roots); // starts at the end
             std::fs::write(&file, "not json\nstill not json\n").unwrap();
             provider.poll(workspace, &session, &roots);
             assert!(provider.stats.skipped > 0, "tallied something to clear");
         }
 
-        reset(&state).unwrap();
-
-        let provider = state.0.lock().unwrap();
+        // What the app's `reset_agents` does: replace the provider outright.
+        provider = ClaudeCode::new();
         assert_eq!(provider.stats, ParseStats::default());
         // The offset went with it, so the next workspace starts at the end
         // rather than replaying whatever arrived while this one was closed.

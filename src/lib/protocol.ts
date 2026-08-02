@@ -1,7 +1,33 @@
-/** Mirror of `src-tauri/src/protocol.rs`. Keep the two files in sync. */
+/** Mirror of `core/src/protocol.rs`. Keep the two files in sync. */
 export interface AppInfo {
   name: string;
   version: string;
+}
+
+/**
+ * Where the backend runs. `local` is the engine in the app's own process;
+ * the others are a daemon reached over `wsl.exe` or `ssh`, because watching
+ * files across a network filesystem does not work.
+ */
+export type ConnectionTarget =
+  { kind: "local" } | { kind: "wsl"; distro: string } | { kind: "ssh"; host: string };
+
+/** Liveness of the backend connection. */
+export type ConnectionState = "connecting" | "connected" | "disconnected" | "failed";
+
+/** The current backend connection, surfaced in the status bar. */
+export interface ConnectionInfo {
+  target: ConnectionTarget;
+  state: ConnectionState;
+  label: string;
+  /** True when the files are not on this machine. */
+  remote: boolean;
+  /** Why, when the state is `disconnected` or `failed`. */
+  message: string | null;
+  /** From the handshake, once it has happened. */
+  daemonVersion: string | null;
+  /** Unix epoch ms of the last state change; the feed's gap marker uses it. */
+  since: number;
 }
 
 /** The currently open workspace. */
@@ -148,6 +174,12 @@ export interface AppSettings {
    * detects itself. The escape hatch for a layout detection can't guess.
    */
   agentRoots: string[];
+  /**
+   * What to run on the far side of a WSL or SSH connection. A bare name works
+   * when the daemon is on the remote `PATH`; an SSH command runs without a
+   * login shell, so an absolute path is often needed.
+   */
+  daemonCommand: string;
 }
 
 /** Which coding agent a session belongs to. */
@@ -221,3 +253,4 @@ export interface AgentPoll {
 export const EVENT_FS_CHANGES = "fs-changes";
 export const EVENT_GIT_STATUS = "git-status";
 export const EVENT_WATCHER_STATUS = "watcher-status";
+export const EVENT_CONNECTION = "connection";

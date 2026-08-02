@@ -8,11 +8,23 @@ import {
   restartSession,
 } from "../lib/tauri";
 import type { WorkspaceInfo } from "../lib/protocol";
+import { useConnectionStore } from "./connectionStore";
 
 interface WorkspaceStore {
   workspace: WorkspaceInfo | null;
   recent: string[];
   error: string | null;
+  /**
+   * True while an open is in flight. Only worth surfacing for a remote one,
+   * where connecting can mean waiting on SSH auth — but the flag is set for
+   * every open so there is one code path.
+   */
+  opening: boolean;
+  /**
+   * Open a workspace. `path` may name another machine
+   * (`wsl://Ubuntu/home/h/proj`, `ssh://box/srv/app`); the backend connects
+   * there first.
+   */
   open: (path: string) => Promise<void>;
   openViaDialog: () => Promise<void>;
   close: () => Promise<void>;
@@ -30,13 +42,25 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
   workspace: null,
   recent: [],
   error: null,
+  opening: false,
 
   open: async (path) => {
+    set({ opening: true, error: null });
     try {
       const workspace = await openWorkspace(path);
-      set({ workspace, error: null });
+      set({ workspace, error: null, opening: false });
+      // A remote open changes which machine is being observed, and a failed
+      // one can leave the connection somewhere new too.
+      await useConnectionStore.getState().refresh();
+      await get().loadRecent();
     } catch (err) {
-      set({ error: toErrorMessage(err) });
+      set({ error: toErrorMessage(err), opening: false });
+      await useConnectionStore.getState().refresh();
+      // Opening elsewhere replaces the backend, which closes whatever the
+      // previous one had open — so a failure part-way through can leave this
+      // store describing a workspace that no longer exists on any machine.
+      // Believe the backend rather than the last thing that worked.
+      await get().restore();
     }
   },
 

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useFeedStore, type FeedEntry } from "../stores/feedStore";
 import { useTreeStore } from "../stores/treeStore";
-import { groupLabel, summarizeBatch } from "../lib/feed";
+import { gapLabel, groupLabel, summarizeBatch } from "../lib/feed";
 import type { FsEventKind } from "../lib/protocol";
 
 /** Render at most this many rows per batch; the rest collapse to "+N more". */
@@ -45,14 +45,47 @@ export default function ActivityFeed() {
 
   return (
     <div className="h-full min-h-0 overflow-y-auto">
-      {entries.map((entry) => (
-        <FeedBlock key={entry.id} entry={entry} onSelect={(path) => void revealPath(path)} />
-      ))}
+      {entries.map((entry) =>
+        entry.kind === "gap" ? (
+          <GapMarker key={entry.id} entry={entry} />
+        ) : (
+          <FeedBlock key={entry.id} entry={entry} onSelect={(path) => void revealPath(path)} />
+        ),
+      )}
     </div>
   );
 }
 
-function FeedBlock({ entry, onSelect }: { entry: FeedEntry; onSelect: (path: string) => void }) {
+/**
+ * The window in which the app was not being told about changes.
+ *
+ * Deliberately loud: silently resuming the feed after an outage would claim
+ * nothing happened while the link was down, which is the one thing that
+ * cannot be known.
+ */
+function GapMarker({ entry }: { entry: Extract<FeedEntry, { kind: "gap" }> }) {
+  const open = entry.to === null;
+  return (
+    <div
+      role="status"
+      className={`flex items-center gap-2 border-b border-border px-3 py-2 text-xs ${
+        open ? "text-danger" : "text-text-muted"
+      }`}
+    >
+      <span aria-hidden className="h-px flex-1 bg-border" />
+      <span className="shrink-0">{gapLabel(entry.from, entry.to)}</span>
+      <span aria-hidden className="h-px flex-1 bg-border" />
+    </div>
+  );
+}
+
+function FeedBlock({
+  entry,
+  onSelect,
+}: {
+  entry: Extract<FeedEntry, { kind: "batch" }>;
+  onSelect: (path: string) => void;
+}) {
   const shown = entry.events.slice(0, MAX_ROWS_PER_BATCH);
   const hidden = entry.events.length - shown.length;
 

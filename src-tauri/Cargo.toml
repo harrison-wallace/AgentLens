@@ -1,6 +1,6 @@
 [package]
 name = "agentlens"
-version = "0.0.8"
+version = "0.1.0"
 description = "Lightweight open-source observer for agentic coding"
 authors = ["Harrison Wallace"]
 license = "MIT"
@@ -19,17 +19,15 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+agentlens-core = { path = "../core" }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Only for the `Gitignore` the settings state holds; the compiling is core's.
 ignore = "0.4"
-git2 = { version = "0.20", default-features = false }
 tauri-plugin-store = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
-notify = "8"
-notify-debouncer-full = "0.6"
-base64 = "0.22"
 
 [dev-dependencies]
 tempfile = "3"

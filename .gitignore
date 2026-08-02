@@ -10,6 +10,9 @@ dist/
 *.tsbuildinfo
 
 # Rust / Tauri
+# Workspace build output moved to the repo root when `core` was extracted;
+# the old path is kept for anyone with a stale checkout.
+/target/
 src-tauri/target/
 src-tauri/gen/
 

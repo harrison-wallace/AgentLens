@@ -1,11 +1,24 @@
 //! Serializable types crossing the UI <-> backend boundary.
 //!
-//! Everything the frontend sends or receives is defined here and mirrored in
-//! `src/lib/protocol.ts`. This is deliberate: a later phase replaces the
-//! in-process backend with a remote daemon, and only serializable messages
-//! survive that move.
+//! Everything a front end sends or receives is defined here and mirrored in
+//! `src/lib/protocol.ts`. This is the seam the crate split turns on: today
+//! these types are passed in-process to a Tauri command, and a later phase
+//! sends the same bytes over a pipe to a daemon running where the files are.
+//! Nothing here may reference a transport, a window, or Tauri — if it did,
+//! that move would stop being possible.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+/// Version of the command/event vocabulary below.
+///
+/// The policy, written out in `docs/PROTOCOL.md`: within one major version
+/// changes are **additive only** — new commands, new optional fields, new
+/// event names. Anything that removes or repurposes an existing shape bumps
+/// this number, and `Hello` is what makes the mismatch a clear error instead
+/// of a puzzling one. Every type in this file carries `#[serde(default)]` or
+/// an `Option` where a future version might not send it, for the same reason.
+pub const PROTOCOL_VERSION: u32 = 1;
 
 /// Identity of the running application, surfaced in the window title and UI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -15,8 +28,26 @@ pub struct AppInfo {
     pub version: String,
 }
 
-/// The result type for every `#[tauri::command]`, so the error shape is
-/// uniform across the UI <-> backend boundary.
+/// A backend's answer to the handshake: who it is and what it speaks.
+///
+/// Sent before anything else on a connection, because everything after it
+/// depends on both ends agreeing about the vocabulary.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+// `default` so a `Hello` from a future backend that grew a field still parses
+// far enough for the version check to produce the guided error.
+#[serde(rename_all = "camelCase", default)]
+pub struct Hello {
+    pub name: String,
+    /// The backend's package version — not necessarily the UI's.
+    pub version: String,
+    pub protocol_version: u32,
+    /// Optional features this backend has. Empty is a valid answer; the UI
+    /// must not require anything here to function.
+    pub capabilities: Vec<String>,
+}
+
+/// The result type for every operation a front end can invoke, so the error
+/// shape is uniform whatever the transport.
 pub type CommandResult<T> = Result<T, String>;
 
 /// The currently open workspace.
@@ -247,6 +278,13 @@ pub struct AppSettings {
     /// keeps multiple profiles is a convention on top of that. Anyone whose
     /// layout we can't guess has no other way to make the feature work.
     pub agent_roots: Vec<String>,
+    /// What to run on the far side of a WSL or SSH connection.
+    ///
+    /// A bare name works when the daemon is on the remote `PATH` — but an SSH
+    /// command runs without a login shell, so `~/.local/bin` typically is not
+    /// on it. An absolute path here is the fix, and it is a setting rather
+    /// than a guess because only the user knows where they put it.
+    pub daemon_command: String,
 }
 
 impl Default for AppSettings {
@@ -254,6 +292,7 @@ impl Default for AppSettings {
         AppSettings {
             show_agent_context: true,
             agent_roots: Vec::new(),
+            daemon_command: "agentlens-daemon".to_string(),
         }
     }
 }
@@ -347,12 +386,214 @@ pub struct AgentPoll {
     pub skipped: u64,
 }
 
+/// Everything a front end can ask a backend to do.
+///
+/// One enum rather than one function per operation, because the whole point
+/// of the split is that these travel down a pipe. A backend running in-process
+/// matches on this; a backend running inside a WSL distro receives the same
+/// value as a line of JSON.
+///
+/// Getters that would collide with the type they return are prefixed `Get`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "cmd", rename_all = "camelCase")]
+pub enum Command {
+    /// Handshake. First command on any connection; see [`Hello`].
+    Hello {
+        protocol_version: u32,
+    },
+    /// Liveness probe. Cheap, touches no state.
+    Ping,
+
+    /// Open `path` and capture session baselines. Does **not** start watching
+    /// — the caller follows with `SetWorkspaceSettings`, since only it knows
+    /// what the persisted settings for the (now canonical) root are.
+    OpenWorkspace {
+        path: String,
+    },
+    CloseWorkspace,
+    CurrentWorkspace,
+    RestartSession,
+    GetWatcherStatus,
+
+    ListDir {
+        path: String,
+    },
+    ListFiles,
+    PinnedEntries,
+    ReadPreview {
+        path: String,
+    },
+    /// The absolute path on the backend's machine for `path`, validated to be
+    /// inside the workspace. Handing it to a viewer is the caller's job —
+    /// which application to use, and how to reach a remote filesystem from
+    /// this side of the connection, are both local questions.
+    ResolveForOpen {
+        path: String,
+    },
+    SessionDiff {
+        path: String,
+    },
+
+    GitStatus,
+    GitCapabilities,
+    GitStage {
+        paths: Vec<String>,
+    },
+    GitStageAll,
+    GitUnstage {
+        paths: Vec<String>,
+    },
+    GitUnstageAll,
+    GitCommit {
+        message: String,
+        amend: bool,
+    },
+    GitBranches,
+    GitSwitchBranch {
+        name: String,
+    },
+    GitCreateBranch {
+        name: String,
+    },
+    GitStashPush {
+        message: Option<String>,
+    },
+    GitStashPop,
+
+    GetWorkspaceSettings,
+    /// Put workspace settings into effect and (re)start the watcher against
+    /// them. Persisting is the caller's business.
+    SetWorkspaceSettings {
+        value: WorkspaceSettings,
+    },
+    GetAppSettings,
+    SetAppSettings {
+        value: AppSettings,
+    },
+
+    AgentSessions,
+    AgentRoots,
+    AgentEvents {
+        session: SessionRef,
+    },
+}
+
+/// One line on the wire between a front end and a remote backend.
+///
+/// Requests carry an id so responses can be matched out of order, and events
+/// carry none because nothing is waiting on them. Serialized one per line to
+/// stdout; stderr on that channel is logs only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum Frame {
+    Request {
+        id: u64,
+        command: Command,
+    },
+    /// Exactly one of `result`/`error` is present. A `null` result is a
+    /// perfectly good success — commands returning nothing send it.
+    Response {
+        id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result: Option<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// A push from the backend, named by one of the `EVENT_*` constants.
+    Event {
+        event: String,
+        payload: Value,
+    },
+}
+
+/// Where a backend runs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ConnectionTarget {
+    /// In-process, watching this machine's filesystem.
+    Local,
+    /// A WSL distro, reached by `wsl.exe -d <distro>`.
+    Wsl { distro: String },
+    /// A host from the user's ssh config, reached by the system `ssh` binary
+    /// so that auth, agents, jump hosts and 2FA behave exactly as they do in
+    /// their terminal.
+    Ssh { host: String },
+}
+
+impl ConnectionTarget {
+    /// True when the files are not on this machine — which is what decides
+    /// whether local-only affordances (opening a file in another app) apply.
+    pub fn is_remote(&self) -> bool {
+        !matches!(self, ConnectionTarget::Local)
+    }
+
+    /// Short label for the status bar.
+    pub fn label(&self) -> String {
+        match self {
+            ConnectionTarget::Local => "Local".to_string(),
+            ConnectionTarget::Wsl { distro } => format!("WSL: {distro}"),
+            ConnectionTarget::Ssh { host } => format!("SSH: {host}"),
+        }
+    }
+}
+
+/// Liveness of the current backend connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ConnectionState {
+    Connecting,
+    Connected,
+    /// The daemon died or the transport failed. A reconnect is in flight.
+    Disconnected,
+    /// Reconnecting was given up on, or the handshake was refused. Needs the
+    /// user to do something.
+    Failed,
+}
+
+/// The current backend connection, surfaced in the status bar.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ConnectionInfo {
+    pub target: ConnectionTarget,
+    pub state: ConnectionState,
+    pub label: String,
+    pub remote: bool,
+    /// Why, when the state is `Disconnected` or `Failed`.
+    pub message: Option<String>,
+    /// From the handshake, once it has happened.
+    pub daemon_version: Option<String>,
+    /// Unix epoch milliseconds of the last state change. The feed uses this
+    /// to place a gap marker over the window it missed.
+    pub since: i64,
+}
+
+impl Default for ConnectionInfo {
+    fn default() -> Self {
+        ConnectionInfo {
+            target: ConnectionTarget::Local,
+            state: ConnectionState::Connected,
+            label: "Local".to_string(),
+            remote: false,
+            message: None,
+            daemon_version: None,
+            since: 0,
+        }
+    }
+}
+
 /// Event names emitted by the backend. Rust `emit` calls and TS `listen`
 /// calls must both go through these constants (mirrored in
 /// `src/lib/protocol.ts`) so the names can't silently drift apart.
 pub const EVENT_FS_CHANGES: &str = "fs-changes";
 pub const EVENT_GIT_STATUS: &str = "git-status";
 pub const EVENT_WATCHER_STATUS: &str = "watcher-status";
+/// Connection lifecycle. Only ever non-trivial for a remote backend, but it
+/// is emitted for local too so the UI has one code path.
+pub const EVENT_CONNECTION: &str = "connection";
+/// Periodic no-op from a remote daemon, to keep an idle SSH link from being
+/// reaped by whatever NAT or firewall sits in the middle. Consumed by the
+/// transport; never forwarded to the front end.
+pub const EVENT_HEARTBEAT: &str = "heartbeat";
 
 #[cfg(test)]
 mod tests {
@@ -414,6 +655,97 @@ mod tests {
         assert_eq!(json["path"], "src/main.rs");
         assert_eq!(json["isDir"], false);
         assert_eq!(json["at"], 1_700_000_000_000i64);
+    }
+
+    #[test]
+    fn commands_are_tagged_and_round_trip() {
+        let cases = [
+            (Command::Ping, "ping"),
+            (Command::ListDir { path: "src".into() }, "listDir"),
+            (
+                Command::GitCommit {
+                    message: "wip".into(),
+                    amend: false,
+                },
+                "gitCommit",
+            ),
+            (Command::GetWorkspaceSettings, "getWorkspaceSettings"),
+        ];
+        for (command, tag) in cases {
+            let json = serde_json::to_value(&command).unwrap();
+            assert_eq!(json["cmd"], tag);
+            let round_tripped: Command = serde_json::from_value(json).unwrap();
+            assert_eq!(round_tripped, command);
+        }
+    }
+
+    #[test]
+    fn a_frame_survives_a_line_of_json() {
+        let frames = [
+            Frame::Request {
+                id: 7,
+                command: Command::Hello {
+                    protocol_version: PROTOCOL_VERSION,
+                },
+            },
+            Frame::Response {
+                id: 7,
+                result: Some(serde_json::json!({ "ok": true })),
+                error: None,
+            },
+            Frame::Response {
+                id: 8,
+                result: None,
+                error: Some("boom".into()),
+            },
+            Frame::Event {
+                event: EVENT_FS_CHANGES.into(),
+                payload: serde_json::json!([]),
+            },
+        ];
+        for frame in frames {
+            let line = serde_json::to_string(&frame).unwrap();
+            assert!(!line.contains('\n'), "frames must be one line: {line}");
+            let round_tripped: Frame = serde_json::from_str(&line).unwrap();
+            assert_eq!(round_tripped, frame);
+        }
+    }
+
+    #[test]
+    fn a_response_omits_the_side_it_did_not_use() {
+        let ok = serde_json::to_value(Frame::Response {
+            id: 1,
+            result: Some(Value::Null),
+            error: None,
+        })
+        .unwrap();
+        assert!(ok.get("error").is_none());
+        assert_eq!(ok["result"], Value::Null);
+    }
+
+    #[test]
+    fn connection_targets_know_whether_they_are_remote() {
+        assert!(!ConnectionTarget::Local.is_remote());
+        assert!(ConnectionTarget::Wsl {
+            distro: "Ubuntu".into()
+        }
+        .is_remote());
+        assert_eq!(
+            ConnectionTarget::Ssh { host: "box".into() }.label(),
+            "SSH: box"
+        );
+    }
+
+    #[test]
+    fn a_hello_from_a_future_version_still_deserializes() {
+        // Additive changes must not break the handshake — that is the whole
+        // point of gating on `protocolVersion` rather than on parse success.
+        let hello: Hello = serde_json::from_str(
+            r#"{"name":"agentlens-daemon","version":"9.9.9","protocolVersion":2,"somethingNew":true}"#,
+        )
+        .unwrap();
+        assert_eq!(hello.protocol_version, 2);
+        assert!(hello.capabilities.is_empty());
     }
 
     #[test]

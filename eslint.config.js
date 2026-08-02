@@ -6,7 +6,9 @@ import tseslint from "typescript-eslint";
 import eslintConfigPrettier from "eslint-config-prettier";
 
 export default tseslint.config(
-  { ignores: ["dist/", "src-tauri/", "node_modules/"] },
+  // `target/` sits at the repo root since the Cargo workspace split, and Tauri
+  // stashes minified codegen assets under it that no linter can parse.
+  { ignores: ["dist/", "target/", "core/", "daemon/", "src-tauri/", "node_modules/"] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ["**/*.{ts,tsx}"],

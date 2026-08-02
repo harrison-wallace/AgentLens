@@ -2,7 +2,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/harrison-wallace/AgentLens/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/harrison-wallace/AgentLens/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/actions/workflow/status/harrison-wallace/AgentLens/release.yml?style=flat-square&label=release)](https://github.com/harrison-wallace/AgentLens/actions/workflows/release.yml)
-[![Version](https://img.shields.io/badge/version-0.0.8-6366f1?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.1.0-6366f1?style=flat-square)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 
 [![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app)
@@ -16,8 +16,9 @@ read-only window into what your terminal coding agent (Claude Code, opencode,
 …) is doing to a directory: live file tree, change feed, git status,
 read-only previews. Runs on Windows and Ubuntu.
 
-**Status:** v0.0.8 — pre-alpha, with the local-observer feature set now in
-place and awaiting acceptance testing on both platforms.
+**Status:** v0.1.0 — the MVP feature set is complete, including remote
+workspaces over WSL and SSH. Still pre-alpha: acceptance testing on Windows
+and Ubuntu is outstanding.
 
 <!-- TODO: screenshot once Phase 1 (local observer) lands -->
 
@@ -41,6 +42,11 @@ place and awaiting acceptance testing on both platforms.
   branches, stash and pop, without leaving the app. Mutations go through the
   `git` CLI, so your hooks run and your config is honoured exactly as in the
   terminal.
+- **Remote workspaces** — observe a WSL distro from the Windows app, or a Linux
+  box over SSH, with the same tree, feed, git decorations and actions. A small
+  headless daemon runs where the files are and streams over stdio: no ports, no
+  tunnels, and SSH auth is your own `ssh` binary's. See
+  [docs/REMOTE.md](docs/REMOTE.md).
 - **`Ctrl+P` file jump**, arrow-key tree navigation, resizable and
   collapsible panels, and per-workspace extra ignore globs.
 
@@ -68,13 +74,14 @@ Three rules follow from that, and they explain most of the design:
 
 Settings are split by what they affect, not where they're stored.
 
-| Scope              | Setting                | Purpose                                                                         |
-| ------------------ | ---------------------- | ------------------------------------------------------------------------------- |
-| **This workspace** | Show git-ignored files | Reveal everything `.gitignore` hides. An escape hatch, not an everyday setting. |
-| **This workspace** | Pinned paths           | Files and directories kept visible and grouped at the top of the tree.          |
-| **This workspace** | Extra ignore globs     | Gitignore syntax; hidden from the tree, the file jump, and the activity feed.   |
-| **All workspaces** | Show agent context     | Surface `AGENTS.md`, `CLAUDE.md` and friends even when git ignores them.        |
-| **All workspaces** | Agent session folders  | Where to look for coding-agent sessions. Detected automatically; add your own.  |
+| Scope              | Setting                | Purpose                                                                            |
+| ------------------ | ---------------------- | ---------------------------------------------------------------------------------- |
+| **This workspace** | Show git-ignored files | Reveal everything `.gitignore` hides. An escape hatch, not an everyday setting.    |
+| **This workspace** | Pinned paths           | Files and directories kept visible and grouped at the top of the tree.             |
+| **This workspace** | Extra ignore globs     | Gitignore syntax; hidden from the tree, the file jump, and the activity feed.      |
+| **All workspaces** | Show agent context     | Surface `AGENTS.md`, `CLAUDE.md` and friends even when git ignores them.           |
+| **All workspaces** | Agent session folders  | Where to look for coding-agent sessions. Detected automatically; add your own.     |
+| **Remote**         | Daemon command         | What to run on a WSL distro or SSH host. An absolute path when it isn't on `PATH`. |
 
 Panel widths and collapse state are view state, not configuration — they're
 remembered automatically and stay out of the settings dialog.
@@ -86,12 +93,11 @@ remembered automatically and stay out of the settings dialog.
 | 0     | Scaffolding — app skeleton, CI on Windows + Ubuntu, release pipeline               | Done             |
 | 1     | Local observer MVP — file tree, gitignore-aware watcher, activity feed, git status | Feature-complete |
 | 2     | Agent integration — agent transcript tailing, file-event ↔ tool-call correlation   | In progress      |
-| 3     | Git actions + polish — stage/commit/branch/stash, diff view, command palette       | Planned          |
-| 4     | Remote — headless daemon for WSL-from-Windows and SSH                              | Planned          |
+| 3     | Git actions + polish — stage/commit/branch/stash, diff view, command palette       | Feature-complete |
+| 4     | Remote — headless daemon for WSL-from-Windows and SSH                              | Feature-complete |
 
-`v0.1.0` is tagged once phase 1 passes acceptance testing on both Windows and
-Ubuntu against a large repository — that run is still outstanding, which is
-why releases are still `0.0.x`.
+Everything up to and including phase 3 ships as `0.0.x`. `v0.1.0` is tagged
+when phase 4 lands and the MVP is complete.
 
 ## Install
 
@@ -99,6 +105,10 @@ Download the installer for your platform from
 [Releases](https://github.com/harrison-wallace/AgentLens/releases). Pre-1.0
 Windows installers are unsigned, so SmartScreen will warn before you can run
 them — this is expected until code signing lands.
+
+To observe a WSL distro or an SSH host, also put `agentlens-daemon` on that
+machine — one binary, no dependencies, published alongside the installers.
+[docs/REMOTE.md](docs/REMOTE.md) has the copy-paste one-liner.
 
 ## Build from source
 
@@ -123,14 +133,19 @@ React front end rendering it.
 
 | Layer        | What it does                                                                   |
 | ------------ | ------------------------------------------------------------------------------ |
-| `src-tauri/` | Filesystem watcher, git status, previews, session snapshots, agent transcripts |
-| `src/`       | React UI — tree, activity feed, preview pane, settings                         |
+| `core/`      | Filesystem watcher, git status and actions, previews, snapshots, agent tailing |
+| `daemon/`    | `core` with a stdio front door — the headless observer for remote machines     |
+| `src-tauri/` | The desktop app — commands, windows, settings persistence, transport choice    |
+| `src/`       | React UI — tree, activity feed, preview pane, source control, settings         |
 
-Everything crossing that boundary is a serializable message defined in
-`src-tauri/src/protocol.rs` and mirrored in `src/lib/protocol.ts`. That
-discipline is deliberate: phase 4 replaces the in-process backend with a
-headless daemon running where the files are (WSL, SSH), and only serializable
-messages survive that move.
+`core/` deliberately has no dependency on Tauri: everything crossing the
+boundary is a serializable message defined in `core/src/protocol.rs` and
+mirrored in `src/lib/protocol.ts`. Watching files over a network filesystem
+doesn't work, so `core` also runs as a headless daemon where the files
+actually are (a WSL distro, an SSH host) and streams to the UI. The app talks
+to both through one `Backend` trait and cannot tell them apart —
+see [docs/PROTOCOL.md](docs/PROTOCOL.md) for the wire format and the
+versioning policy.
 
 ## Contributing
 

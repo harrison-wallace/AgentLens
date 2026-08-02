@@ -7,9 +7,9 @@ use std::path::Path;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use ignore::WalkBuilder;
 
+use crate::ignores::is_extra_ignored;
 use crate::paths::{resolve_in_workspace, to_workspace_relative};
 use crate::protocol::{DirEntryNode, PinnedEntry};
-use crate::settings::is_extra_ignored;
 use crate::visibility::{is_agent_context, Visibility};
 
 /// Upper bound on the `Ctrl+P` index. A repo larger than this still works;
@@ -240,8 +240,8 @@ pub fn pinned_entries(root: &Path, visibility: &Visibility) -> Vec<PinnedEntry> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ignores::build_matcher;
     use crate::protocol::{AppSettings, WorkspaceSettings};
-    use crate::settings::build_matcher;
     use std::fs;
 
     fn no_extra() -> Gitignore {

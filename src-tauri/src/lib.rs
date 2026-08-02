@@ -1,58 +1,52 @@
-mod agents;
-mod gitops;
-mod gitstatus;
-mod paths;
-mod preview;
-mod protocol;
+//! The desktop app: Tauri commands, persistence, and choosing a backend.
+//!
+//! Every command here is a thin wrapper that hands a `Command` to whichever
+//! backend is connected and passes the JSON back to the webview. What the
+//! *app* still owns is the part a machine holding files has no business
+//! owning: the settings store, the recent-workspaces list, which connection is
+//! in use, and handing a file to another application.
+
+mod backend;
+mod events;
+mod remote;
 mod settings;
-mod snapshots;
-mod tree;
-mod visibility;
-mod watcher;
 mod workspace;
 
-use agents::{AgentProvider, AgentState};
-use protocol::{
-    AgentPoll, AgentRootInfo, AppSettings, BranchList, CommandResult, DirEntryNode,
-    GitCapabilities, GitStatusSnapshot, PinnedEntry, PreviewPayload, SessionDiff, SessionRef,
-    WatcherStatus, WorkspaceInfo, WorkspaceSettings,
+use std::sync::Arc;
+
+use agentlens_core::protocol::{
+    self, AppSettings, Command, CommandResult, ConnectionInfo, ConnectionTarget, SessionRef,
+    WorkspaceInfo, WorkspaceSettings, EVENT_CONNECTION,
 };
-use settings::SettingsState;
-use snapshots::SessionState;
-use std::path::PathBuf;
+use backend::child::ChildProcess;
+use backend::{Backend, BackendState, InProcess};
+use events::TauriEvents;
+use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
-use watcher::WatcherManager;
-use workspace::WorkspaceState;
 
-fn to_workspace_info(w: &workspace::Workspace) -> WorkspaceInfo {
-    WorkspaceInfo {
-        root: paths::normalize_absolute(&w.root),
-        name: w.name.clone(),
-        watching_since: w.watching_since,
-    }
+/// Run `command` on the connected backend.
+fn send(state: &State<BackendState>, command: Command) -> CommandResult<Value> {
+    state.current()?.send(command)
 }
 
-/// (Re)start the watcher against the visibility rules currently in effect.
-/// The watcher holds its filters for the life of the watch, so any settings
-/// change that alters what is visible has to go through here.
-fn restart_watcher(
-    app: &AppHandle,
-    watcher_state: &WatcherManager,
-    settings_state: &SettingsState,
-    root: &std::path::Path,
-) -> CommandResult<()> {
-    watcher::start(
-        app,
-        watcher_state,
-        root,
-        watcher::Filters::new(
-            root,
-            settings::current_matcher(settings_state),
-            settings::current_visibility(settings_state)?,
-        ),
-    );
-    Ok(())
+/// Run `command` and read the reply as `T`, for the few places the app needs
+/// the value rather than just forwarding it.
+fn ask<T: serde::de::DeserializeOwned>(
+    backend: &Arc<dyn Backend>,
+    command: Command,
+) -> CommandResult<T> {
+    serde_json::from_value(backend.send(command)?)
+        .map_err(|e| format!("unexpected reply from the backend: {e}"))
+}
+
+/// How the open workspace is written down in the store: bare path when local,
+/// scheme-qualified when not. Two SSH hosts with the same directory layout
+/// must not share one settings entry.
+fn location_of(backend: &Arc<dyn Backend>) -> CommandResult<String> {
+    let info: Option<WorkspaceInfo> = ask(backend, Command::CurrentWorkspace)?;
+    let info = info.ok_or("no workspace is open")?;
+    Ok(remote::format_location(&backend.info().target, &info.root))
 }
 
 #[tauri::command]
@@ -63,350 +57,274 @@ fn get_app_info() -> protocol::AppInfo {
     }
 }
 
+/// Open a workspace, connecting first if the location names another machine.
+///
+/// Two commands rather than one, because the backend canonicalizes the root
+/// and only then can the app look up the settings persisted against it — a
+/// daemon has no store to look in.
 #[tauri::command]
 fn open_workspace(
     path: String,
-    state: State<WorkspaceState>,
-    watcher_state: State<WatcherManager>,
-    settings_state: State<SettingsState>,
-    session_state: State<SessionState>,
-    agent_state: State<AgentState>,
+    state: State<BackendState>,
     app: AppHandle,
 ) -> CommandResult<WorkspaceInfo> {
-    let opened = workspace::open(&state, &PathBuf::from(path))?;
+    let (target, path) = remote::parse_location(&path);
+    if target != state.current()?.info().target {
+        connect_to(target, &state, &app)?;
+    }
+
+    let backend = state.current()?;
+    let info: WorkspaceInfo = ask(&backend, Command::OpenWorkspace { path })?;
+    let location = remote::format_location(&backend.info().target, &info.root);
+
     // Persisting the recent list is best-effort: a read-only or unwritable
     // config dir must not stop the user opening a workspace.
-    if let Err(err) = workspace::record_recent(&app, &opened.root) {
+    if let Err(err) = workspace::record_recent(&app, &location) {
         eprintln!("agentlens: {err}");
     }
 
-    // Settings first — the tree, the file index, and the watcher all filter
-    // through them, so they have to be in effect before anything reads.
-    let loaded = settings::load(&app, &opened.root);
-    settings::activate(&settings_state, &opened.root, loaded)?;
-    snapshots::restart(&session_state, &opened.root)?;
-    // Read offsets and parse tallies belong to the workspace, not the app.
-    agents::reset(&agent_state)?;
-    restart_watcher(&app, &watcher_state, &settings_state, &opened.root)?;
-    Ok(to_workspace_info(&opened))
+    // Settings second, and they are what starts the watcher — the tree, the
+    // file index and the feed all filter through them, so nothing may read
+    // before they are in effect.
+    backend.send(Command::SetWorkspaceSettings {
+        value: settings::load(&app, &location),
+    })?;
+    Ok(info)
 }
 
 #[tauri::command]
-fn close_workspace(
-    state: State<WorkspaceState>,
-    watcher_state: State<WatcherManager>,
-    settings_state: State<SettingsState>,
-    session_state: State<SessionState>,
-    agent_state: State<AgentState>,
-    app: AppHandle,
-) -> CommandResult<()> {
-    watcher::stop(&app, &watcher_state);
-    snapshots::clear(&session_state)?;
-    settings::deactivate(&settings_state)?;
-    agents::reset(&agent_state)?;
-    workspace::close(&state)
+fn close_workspace(state: State<BackendState>) -> CommandResult<Value> {
+    send(&state, Command::CloseWorkspace)
 }
 
 #[tauri::command]
-fn watcher_status(watcher_state: State<WatcherManager>) -> CommandResult<WatcherStatus> {
-    Ok(watcher::status(&watcher_state))
+fn current_workspace(state: State<BackendState>) -> CommandResult<Value> {
+    send(&state, Command::CurrentWorkspace)
 }
 
 #[tauri::command]
-fn current_workspace(state: State<WorkspaceState>) -> CommandResult<Option<WorkspaceInfo>> {
-    Ok(workspace::current_opt(&state)?.map(|w| to_workspace_info(&w)))
+fn watcher_status(state: State<BackendState>) -> CommandResult<Value> {
+    send(&state, Command::GetWatcherStatus)
 }
 
 #[tauri::command]
-fn list_dir(
-    path: String,
-    state: State<WorkspaceState>,
-    settings_state: State<SettingsState>,
-) -> CommandResult<Vec<DirEntryNode>> {
-    let ws = workspace::current(&state)?;
-    tree::list_dir(
-        &ws.root,
-        &path,
-        &settings::current_matcher(&settings_state),
-        &settings::current_visibility(&settings_state)?,
-    )
+fn list_dir(path: String, state: State<BackendState>) -> CommandResult<Value> {
+    send(&state, Command::ListDir { path })
 }
 
 #[tauri::command]
-fn list_files(
-    state: State<WorkspaceState>,
-    settings_state: State<SettingsState>,
-) -> CommandResult<Vec<String>> {
-    let ws = workspace::current(&state)?;
-    Ok(tree::list_files(
-        &ws.root,
-        &settings::current_matcher(&settings_state),
-        &settings::current_visibility(&settings_state)?,
-    ))
+fn list_files(state: State<BackendState>) -> CommandResult<Value> {
+    send(&state, Command::ListFiles)
 }
 
 #[tauri::command]
-fn git_status(state: State<WorkspaceState>) -> CommandResult<GitStatusSnapshot> {
-    let ws = workspace::current(&state)?;
-    gitstatus::status(&ws.root)
+fn git_status(state: State<BackendState>) -> CommandResult<Value> {
+    send(&state, Command::GitStatus)
 }
 
-/// Whether git mutations can be offered at all, so the UI can degrade to
-/// read-only with a hint instead of showing buttons that fail when pressed.
 #[tauri::command]
-fn git_capabilities(state: State<WorkspaceState>) -> CommandResult<GitCapabilities> {
-    let ws = workspace::current(&state)?;
-    Ok(gitops::capabilities(&ws.root))
+fn git_capabilities(state: State<BackendState>) -> CommandResult<Value> {
+    send(&state, Command::GitCapabilities)
 }
 
-/// Run a mutation, then re-read status and push it to the UI.
+#[tauri::command]
+fn git_stage(paths: Vec<String>, state: State<BackendState>) -> CommandResult<Value> {
+    send(&state, Command::GitStage { paths })
+}
+
+#[tauri::command]
+fn git_stage_all(state: State<BackendState>) -> CommandResult<Value> {
+    send(&state, Command::GitStageAll)
+}
+
+#[tauri::command]
+fn git_unstage(paths: Vec<String>, state: State<BackendState>) -> CommandResult<Value> {
+    send(&state, Command::GitUnstage { paths })
+}
+
+#[tauri::command]
+fn git_unstage_all(state: State<BackendState>) -> CommandResult<Value> {
+    send(&state, Command::GitUnstageAll)
+}
+
+#[tauri::command]
+fn git_commit(message: String, amend: bool, state: State<BackendState>) -> CommandResult<Value> {
+    send(&state, Command::GitCommit { message, amend })
+}
+
+#[tauri::command]
+fn git_branches(state: State<BackendState>) -> CommandResult<Value> {
+    send(&state, Command::GitBranches)
+}
+
+#[tauri::command]
+fn git_switch_branch(name: String, state: State<BackendState>) -> CommandResult<Value> {
+    send(&state, Command::GitSwitchBranch { name })
+}
+
+#[tauri::command]
+fn git_create_branch(name: String, state: State<BackendState>) -> CommandResult<Value> {
+    send(&state, Command::GitCreateBranch { name })
+}
+
+#[tauri::command]
+fn git_stash_push(message: Option<String>, state: State<BackendState>) -> CommandResult<Value> {
+    send(&state, Command::GitStashPush { message })
+}
+
+#[tauri::command]
+fn git_stash_pop(state: State<BackendState>) -> CommandResult<Value> {
+    send(&state, Command::GitStashPop)
+}
+
+#[tauri::command]
+fn read_preview(path: String, state: State<BackendState>) -> CommandResult<Value> {
+    send(&state, Command::ReadPreview { path })
+}
+
+/// Hand the file to the OS default application.
 ///
-/// Every git write goes through here: a mutation whose result isn't reflected
-/// immediately reads as a failure, and `.git`-only changes are filtered out of
-/// the watcher's feed, so nothing else would prompt the refresh.
-fn mutate(
-    app: &AppHandle,
-    root: &std::path::Path,
-    op: impl FnOnce() -> CommandResult<()>,
-) -> CommandResult<GitStatusSnapshot> {
-    op()?;
-    let snapshot = gitstatus::status(root)?;
-    let _ = app.emit(protocol::EVENT_GIT_STATUS, &snapshot);
-    Ok(snapshot)
-}
-
+/// The backend resolves the path (and refuses anything outside the
+/// workspace); expressing it in terms *this* machine can open is local work,
+/// and for an SSH host there is no such expression — the user is told that
+/// rather than watching nothing happen.
 #[tauri::command]
-fn git_stage(
-    paths: Vec<String>,
-    state: State<WorkspaceState>,
-    app: AppHandle,
-) -> CommandResult<GitStatusSnapshot> {
-    let ws = workspace::current(&state)?;
-    mutate(&app, &ws.root, || gitops::stage(&ws.root, &paths))
-}
-
-#[tauri::command]
-fn git_stage_all(state: State<WorkspaceState>, app: AppHandle) -> CommandResult<GitStatusSnapshot> {
-    let ws = workspace::current(&state)?;
-    mutate(&app, &ws.root, || gitops::stage_all(&ws.root))
-}
-
-#[tauri::command]
-fn git_unstage(
-    paths: Vec<String>,
-    state: State<WorkspaceState>,
-    app: AppHandle,
-) -> CommandResult<GitStatusSnapshot> {
-    let ws = workspace::current(&state)?;
-    mutate(&app, &ws.root, || gitops::unstage(&ws.root, &paths))
-}
-
-#[tauri::command]
-fn git_unstage_all(
-    state: State<WorkspaceState>,
-    app: AppHandle,
-) -> CommandResult<GitStatusSnapshot> {
-    let ws = workspace::current(&state)?;
-    mutate(&app, &ws.root, || gitops::unstage_all(&ws.root))
-}
-
-#[tauri::command]
-fn git_commit(
-    message: String,
-    amend: bool,
-    state: State<WorkspaceState>,
-    app: AppHandle,
-) -> CommandResult<GitStatusSnapshot> {
-    let ws = workspace::current(&state)?;
-    mutate(&app, &ws.root, || gitops::commit(&ws.root, &message, amend))
-}
-
-#[tauri::command]
-fn git_branches(state: State<WorkspaceState>) -> CommandResult<BranchList> {
-    let ws = workspace::current(&state)?;
-    gitops::branches(&ws.root)
-}
-
-#[tauri::command]
-fn git_switch_branch(
-    name: String,
-    state: State<WorkspaceState>,
-    app: AppHandle,
-) -> CommandResult<GitStatusSnapshot> {
-    let ws = workspace::current(&state)?;
-    mutate(&app, &ws.root, || gitops::switch_branch(&ws.root, &name))
-}
-
-#[tauri::command]
-fn git_create_branch(
-    name: String,
-    state: State<WorkspaceState>,
-    app: AppHandle,
-) -> CommandResult<GitStatusSnapshot> {
-    let ws = workspace::current(&state)?;
-    mutate(&app, &ws.root, || gitops::create_branch(&ws.root, &name))
-}
-
-#[tauri::command]
-fn git_stash_push(
-    message: Option<String>,
-    state: State<WorkspaceState>,
-    app: AppHandle,
-) -> CommandResult<GitStatusSnapshot> {
-    let ws = workspace::current(&state)?;
-    mutate(&app, &ws.root, || {
-        gitops::stash_push(&ws.root, message.as_deref())
-    })
-}
-
-#[tauri::command]
-fn git_stash_pop(state: State<WorkspaceState>, app: AppHandle) -> CommandResult<GitStatusSnapshot> {
-    let ws = workspace::current(&state)?;
-    mutate(&app, &ws.root, || gitops::stash_pop(&ws.root))
-}
-
-#[tauri::command]
-fn read_preview(path: String, state: State<WorkspaceState>) -> CommandResult<PreviewPayload> {
-    let ws = workspace::current(&state)?;
-    preview::read(&ws.root, &path)
-}
-
-#[tauri::command]
-fn open_externally(
-    path: String,
-    state: State<WorkspaceState>,
-    app: AppHandle,
-) -> CommandResult<()> {
-    let ws = workspace::current(&state)?;
-    let target = preview::resolve_for_open(&ws.root, &path)?;
+fn open_externally(path: String, state: State<BackendState>, app: AppHandle) -> CommandResult<()> {
+    let backend = state.current()?;
+    let resolved: String = ask(&backend, Command::ResolveForOpen { path })?;
+    let target = remote::to_local_path(&backend.info().target, &resolved)?;
     app.opener()
-        .open_path(target.to_string_lossy(), None::<&str>)
+        .open_path(target, None::<&str>)
         .map_err(|e| format!("failed to open file: {e}"))
 }
 
 #[tauri::command]
-fn session_diff(
-    path: String,
-    state: State<WorkspaceState>,
-    session_state: State<SessionState>,
-) -> CommandResult<SessionDiff> {
-    let ws = workspace::current(&state)?;
-    snapshots::diff(&session_state, &ws.root, &path)
+fn session_diff(path: String, state: State<BackendState>) -> CommandResult<Value> {
+    send(&state, Command::SessionDiff { path })
 }
 
 #[tauri::command]
-fn restart_session(
-    state: State<WorkspaceState>,
-    session_state: State<SessionState>,
-) -> CommandResult<WorkspaceInfo> {
-    let ws = workspace::restart_session(&state)?;
-    snapshots::restart(&session_state, &ws.root)?;
-    Ok(to_workspace_info(&ws))
+fn restart_session(state: State<BackendState>) -> CommandResult<Value> {
+    send(&state, Command::RestartSession)
 }
 
 #[tauri::command]
-fn workspace_settings(settings_state: State<SettingsState>) -> CommandResult<WorkspaceSettings> {
-    settings::current(&settings_state)
+fn workspace_settings(state: State<BackendState>) -> CommandResult<Value> {
+    send(&state, Command::GetWorkspaceSettings)
 }
 
 #[tauri::command]
 fn set_workspace_settings(
     value: WorkspaceSettings,
-    state: State<WorkspaceState>,
-    settings_state: State<SettingsState>,
-    watcher_state: State<WatcherManager>,
+    state: State<BackendState>,
     app: AppHandle,
-) -> CommandResult<WorkspaceSettings> {
-    let ws = workspace::current(&state)?;
-    settings::save(&app, &ws.root, &value)?;
-    settings::activate(&settings_state, &ws.root, value)?;
-    restart_watcher(&app, &watcher_state, &settings_state, &ws.root)?;
-    settings::current(&settings_state)
+) -> CommandResult<Value> {
+    let backend = state.current()?;
+    settings::save(&app, &location_of(&backend)?, &value)?;
+    backend.send(Command::SetWorkspaceSettings { value })
 }
 
 #[tauri::command]
-fn app_settings(settings_state: State<SettingsState>) -> CommandResult<AppSettings> {
-    settings::current_app(&settings_state)
+fn app_settings(state: State<BackendState>) -> CommandResult<Value> {
+    send(&state, Command::GetAppSettings)
 }
 
 /// App-level settings outlive the workspace, so unlike `set_workspace_settings`
-/// this doesn't need one open — but when there is one, the watcher has to pick
-/// up the new visibility rules the same way.
+/// this doesn't need one open. They are stored here and pushed to the backend,
+/// which is also what a fresh daemon is told first when a connection is made.
 #[tauri::command]
 fn set_app_settings(
     value: AppSettings,
-    state: State<WorkspaceState>,
-    settings_state: State<SettingsState>,
-    watcher_state: State<WatcherManager>,
+    state: State<BackendState>,
     app: AppHandle,
-) -> CommandResult<AppSettings> {
-    settings::save_app(&app, &settings_state, value)?;
-    if let Some(ws) = workspace::current_opt(&state)? {
-        restart_watcher(&app, &watcher_state, &settings_state, &ws.root)?;
-    }
-    settings::current_app(&settings_state)
+) -> CommandResult<Value> {
+    settings::save_app(&app, &value)?;
+    send(&state, Command::SetAppSettings { value })
 }
 
 #[tauri::command]
-fn pinned_entries(
-    state: State<WorkspaceState>,
-    settings_state: State<SettingsState>,
-) -> CommandResult<Vec<PinnedEntry>> {
-    let ws = workspace::current(&state)?;
-    Ok(tree::pinned_entries(
-        &ws.root,
-        &settings::current_visibility(&settings_state)?,
-    ))
+fn pinned_entries(state: State<BackendState>) -> CommandResult<Value> {
+    send(&state, Command::PinnedEntries)
 }
 
 /// Agent sessions found for the open workspace, most recently active first.
 /// An empty list is the normal answer when no agent is running — never an
 /// error, since most workspaces have no session at all.
 #[tauri::command]
-fn agent_sessions(
-    state: State<WorkspaceState>,
-    settings_state: State<SettingsState>,
-) -> CommandResult<Vec<SessionRef>> {
-    let ws = workspace::current(&state)?;
-    let roots = agents::resolve_roots(&settings::current_app(&settings_state)?.agent_roots);
-    Ok(agents::claude::ClaudeCode::new().discover(&ws.root, &roots))
+fn agent_sessions(state: State<BackendState>) -> CommandResult<Value> {
+    send(&state, Command::AgentSessions)
 }
 
-/// Where the app is looking for agent sessions, and where each entry came
+/// Where the backend is looking for agent sessions, and where each entry came
 /// from. Surfaced in settings so "no agent detected" is diagnosable instead of
-/// a dead end — and so a typo'd path the user added is visibly unrecognised.
+/// a dead end — and, on a remote connection, so it is obvious that the roots
+/// being searched are the *remote* machine's.
 #[tauri::command]
-fn agent_roots(settings_state: State<SettingsState>) -> CommandResult<Vec<AgentRootInfo>> {
-    Ok(agents::describe_roots(
-        &settings::current_app(&settings_state)?.agent_roots,
-    ))
+fn agent_roots(state: State<BackendState>) -> CommandResult<Value> {
+    send(&state, Command::AgentRoots)
 }
 
-/// Records appended to `session` since the last call. The provider keeps its
-/// own read offset in `AgentState`, so this returns only what is new — and
-/// nothing at all the first time, since a workspace opened mid-task must not
-/// replay history into the feed.
+/// Records appended to `session` since the last call. The backend keeps the
+/// read offset, so this returns only what is new — and nothing at all the
+/// first time, since a workspace opened mid-task must not replay history into
+/// the feed.
 #[tauri::command]
-fn agent_events(
-    session: SessionRef,
-    state: State<WorkspaceState>,
-    settings_state: State<SettingsState>,
-    agent_state: State<AgentState>,
-) -> CommandResult<AgentPoll> {
-    let ws = workspace::current(&state)?;
-    let roots = agents::resolve_roots(&settings::current_app(&settings_state)?.agent_roots);
-    let mut provider = agent_state.0.lock().map_err(|_| "agent state poisoned")?;
-    let events = provider.poll(&ws.root, &session, &roots);
-    Ok(AgentPoll {
-        events,
-        records: provider.stats.records,
-        skipped: provider.stats.skipped,
-    })
+fn agent_events(session: SessionRef, state: State<BackendState>) -> CommandResult<Value> {
+    send(&state, Command::AgentEvents { session })
 }
 
 #[tauri::command]
 fn recent_workspaces(app: AppHandle) -> CommandResult<Vec<String>> {
     workspace::recent_workspaces(&app)
+}
+
+/// The WSL distros installed on this machine, for the "Open in WSL…" picker.
+/// Empty everywhere except a Windows box with WSL, which is not an error.
+#[tauri::command]
+fn wsl_distros() -> Vec<String> {
+    remote::wsl_distros()
+}
+
+#[tauri::command]
+fn connection(state: State<BackendState>) -> CommandResult<ConnectionInfo> {
+    Ok(state.current()?.info())
+}
+
+/// Back to observing this machine.
+///
+/// There is no matching `connect` command: `open_workspace` connects wherever
+/// the location it is given points, which is the only time pointing the app at
+/// another machine is useful. Coming back has no location to hang off, so it
+/// gets one of its own.
+#[tauri::command]
+fn disconnect(state: State<BackendState>, app: AppHandle) -> CommandResult<ConnectionInfo> {
+    connect_to(ConnectionTarget::Local, &state, &app)
+}
+
+/// Build a backend for `target`, install it, and give it the app-level
+/// settings it has no way to load for itself.
+fn connect_to(
+    target: ConnectionTarget,
+    state: &State<BackendState>,
+    app: &AppHandle,
+) -> CommandResult<ConnectionInfo> {
+    let events = Arc::new(TauriEvents(app.clone()));
+    let stored = settings::load_app(app);
+
+    let backend: Arc<dyn Backend> = match &target {
+        ConnectionTarget::Local => Arc::new(InProcess::new(events)),
+        _ => Arc::new(ChildProcess::connect(
+            target.clone(),
+            stored.daemon_command.clone(),
+            events,
+        )?),
+    };
+
+    let info = backend.info();
+    backend.send(Command::SetAppSettings { value: stored })?;
+    state.replace(backend)?;
+    let _ = app.emit(EVENT_CONNECTION, &info);
+    Ok(info)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -415,11 +333,6 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .manage(WorkspaceState::default())
-        .manage(WatcherManager::default())
-        .manage(SettingsState::default())
-        .manage(SessionState::default())
-        .manage(AgentState::default())
         .invoke_handler(tauri::generate_handler![
             get_app_info,
             open_workspace,
@@ -453,6 +366,9 @@ pub fn run() {
             agent_roots,
             recent_workspaces,
             watcher_status,
+            connection,
+            disconnect,
+            wsl_distros,
         ])
         .setup(|app| {
             let window = app
@@ -461,14 +377,32 @@ pub fn run() {
             window
                 .set_title(&format!("AgentLens v{}", env!("CARGO_PKG_VERSION")))
                 .expect("failed to set window title");
-            // App-level settings outlive any workspace, so they load once here
-            // rather than on open. An unreadable store means defaults, not a
-            // refusal to start.
-            let loaded = settings::load_app(app.handle());
-            settings::set_app(&app.state::<SettingsState>(), loaded)
-                .map_err(|e| std::io::Error::other(e.to_string()))?;
+
+            // The app starts local. App-level settings outlive any workspace,
+            // so they load once here rather than on open; an unreadable store
+            // means defaults, not a refusal to start.
+            let events = Arc::new(TauriEvents(app.handle().clone()));
+            let local: Arc<dyn Backend> = Arc::new(InProcess::new(events));
+            local
+                .send(Command::SetAppSettings {
+                    value: settings::load_app(app.handle()),
+                })
+                .map_err(std::io::Error::other)?;
+            app.manage(BackendState::new(local));
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app, event| {
+            // A remote connection is a child process holding an OS watch and,
+            // for SSH, a network session. Closing the window has to take them
+            // with it — otherwise `ssh` outlives the app that spawned it.
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                if let Some(state) = app.try_state::<BackendState>() {
+                    if let Ok(backend) = state.current() {
+                        backend.shutdown();
+                    }
+                }
+            }
+        });
 }

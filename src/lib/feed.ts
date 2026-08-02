@@ -13,6 +13,22 @@ export function groupLabel(at: number, now: number = Date.now()): string {
   return `${Math.floor(diffMs / 3_600_000)}h ago`;
 }
 
+/** Wall-clock `HH:MM` for a gap marker, which is about *when*, not "how long ago". */
+export function clockLabel(at: number): string {
+  return new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+/**
+ * The line a gap marker shows, e.g. "disconnected 14:02–14:03". An open gap
+ * has no end yet, and saying so is the point — the app is admitting it does
+ * not know what is happening right now.
+ */
+export function gapLabel(from: number, to: number | null): string {
+  return to === null
+    ? `disconnected since ${clockLabel(from)}`
+    : `disconnected ${clockLabel(from)}–${clockLabel(to)}`;
+}
+
 const KIND_ORDER: FsEventKind[] = ["created", "modified", "deleted", "renamed"];
 
 /** Short summary line for a batch, e.g. "3 modified, 1 created". */

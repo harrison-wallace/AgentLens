@@ -36,8 +36,6 @@ jobs:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri -> target
 
       - run: npm ci
 
@@ -50,3 +48,67 @@ jobs:
           releaseBody: "See CHANGELOG.md for details."
           releaseDraft: true
           prerelease: false
+
+  # The daemon is not part of any installer: it is downloaded straight onto the
+  # machine holding the files (a WSL distro, an SSH host), which is usually not
+  # the machine the app is installed on and often not even the same OS. So it
+  # ships as bare binaries whose names say what they run on, and the setup
+  # guide's one-liner is a `curl` for exactly these.
+  #
+  # Built on ubuntu-22.04 rather than the newest runner: glibc is backwards
+  # compatible, not forwards, so the oldest one we build on is the oldest
+  # distro the binary works in.
+  daemon:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            asset: agentlens-daemon-linux-x86_64
+          - os: ubuntu-22.04
+            target: aarch64-unknown-linux-gnu
+            asset: agentlens-daemon-linux-aarch64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: agentlens-daemon-windows-x86_64.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # `git2` vendors and compiles libgit2, so a cross build needs a C
+      # cross-compiler and cargo needs telling which linker to use.
+      - name: Install the aarch64 cross toolchain
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - run: cargo build --release -p agentlens-daemon --target ${{ matrix.target }}
+
+      - name: Name the binary after what it runs on
+        shell: bash
+        run: |
+          set -eux
+          src=target/${{ matrix.target }}/release/agentlens-daemon
+          [ -f "$src" ] || src="$src.exe"
+          cp "$src" "${{ matrix.asset }}"
+
+      # Same draft release the installers land in, so a release is one place.
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          draft: true
+          files: ${{ matrix.asset }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

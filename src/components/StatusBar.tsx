@@ -1,8 +1,9 @@
 import BranchControl from "./BranchControl";
+import { useConnectionStore } from "../stores/connectionStore";
 import { useGitStore } from "../stores/gitStore";
 import { useWatcherStore } from "../stores/watcherStore";
 import { countsFor } from "../lib/treeRows";
-import type { WatcherState } from "../lib/protocol";
+import type { ConnectionState, WatcherState } from "../lib/protocol";
 
 // Exhaustive over `WatcherState` with no `default`, so adding a state is a
 // type error here rather than a silent "watcher: off".
@@ -15,6 +16,43 @@ function watcherLabel(state: WatcherState, message: string | null): string {
     case "off":
       return "watcher: off";
   }
+}
+
+// Exhaustive for the same reason as `watcherLabel`.
+function connectionClass(state: ConnectionState): string {
+  switch (state) {
+    case "connected":
+      return "text-text-muted";
+    case "connecting":
+      return "text-git-modified";
+    case "disconnected":
+    case "failed":
+      return "text-danger";
+  }
+}
+
+/**
+ * Which machine is being observed, shown only when that isn't this one.
+ *
+ * A local session should look exactly as it did before remote existed — an
+ * always-on "Local" chip would be noise for the common case. But the moment
+ * the files are elsewhere, the feed and the tree are describing another
+ * machine, and that has to be on screen.
+ */
+function ConnectionChip() {
+  const info = useConnectionStore((s) => s.info);
+  if (!info.remote) return null;
+
+  const suffix = info.state === "connected" ? "" : ` · ${info.state}`;
+  return (
+    <span
+      className={`shrink-0 truncate ${connectionClass(info.state)}`}
+      title={info.message ?? (info.daemonVersion ? `daemon v${info.daemonVersion}` : undefined)}
+    >
+      {info.label}
+      {suffix}
+    </span>
+  );
 }
 
 export default function StatusBar() {
@@ -42,8 +80,11 @@ export default function StatusBar() {
           <span className="text-git-untracked">? {counts.untracked}</span>
         </span>
       )}
+      <span className="ml-auto flex items-center gap-4 overflow-hidden">
+        <ConnectionChip />
+      </span>
       <span
-        className={`ml-auto shrink-0 truncate ${watcher.state === "error" ? "text-danger" : ""}`}
+        className={`shrink-0 truncate ${watcher.state === "error" ? "text-danger" : ""}`}
         title={watcher.message ?? undefined}
       >
         {watcherLabel(watcher.state, watcher.message)}

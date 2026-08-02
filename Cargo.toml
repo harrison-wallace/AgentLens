@@ -1,0 +1,11 @@
+# Workspace root. `core` holds everything that observes a directory —
+# filesystem, git, agent transcripts — with no dependency on Tauri or on any
+# UI. `src-tauri` is the desktop app: commands, windows, and persistence.
+# `daemon` is `core` with a stdio front door, for running where the files
+# actually are (a WSL distro, an SSH host) and streaming to a UI elsewhere.
+#
+# Anything added to `core` must stay free of Tauri, or the daemon stops
+# building — which is the point of it being its own member.
+[workspace]
+members = ["core", "daemon", "src-tauri"]
+resolver = "2"

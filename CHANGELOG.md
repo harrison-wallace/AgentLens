@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-08-02
+
+The MVP: AgentLens now works when the files are on another machine.
+
+### Added
+
+- **Remote workspaces over WSL and SSH.** Open a directory inside a WSL distro
+  from the Windows app, or on a Linux box over SSH, and get the same file
+  tree, activity feed, git decorations, git actions, previews,
+  diff-since-session and agent tailing as a local workspace. Agent transcripts
+  are read from the _remote_ `~/.claude`, which is where an agent running
+  there actually writes them.
+- **`agentlens-daemon`** — a single dependency-free binary that runs where the
+  files are and speaks newline-delimited JSON over stdio. Published for
+  linux-x86_64, linux-aarch64 and windows-x86_64 alongside the installers.
+  Watching a remote filesystem is not possible: the 9P bridge behind `\\wsl$`
+  does not propagate inotify events and SFTP has no events at all, so the
+  observer has to move rather than the UI.
+- stdio rather than a socket, which means no listening ports, no tunnels and
+  no firewall rules — and over SSH, the system `ssh` binary does the
+  authenticating, so `~/.ssh/config` aliases, agent forwarding, jump hosts and
+  2FA behave exactly as they do in your terminal.
+- **Open in WSL… / Open over SSH…** on the start screen. A remote workspace is
+  recorded in Recent as a location (`wsl://Ubuntu/home/you/project`,
+  `ssh://build-box/srv/app`), so reopening it later is one click and
+  reconnects on the way.
+- **Reconnection with visible gaps.** A dropped link is reported in the status
+  bar and retried with backoff; the activity feed marks the window it was
+  blind for (`disconnected 14:02–14:03`) rather than silently resuming, since
+  "nothing happened" is the one thing it cannot know about that window. A
+  reconnected daemon is a fresh process, so settings and the open workspace
+  are re-applied before the link is declared healthy.
+- A **Daemon command** setting, for the case that trips everyone up once:
+  `ssh host command` runs without a login shell, so `~/.local/bin` is usually
+  not on `PATH` and a correctly installed daemon reports "command not found".
+- A protocol handshake with an explicit version, so an app and a daemon from
+  different releases fail with a message naming both versions instead of
+  half-working. `docs/PROTOCOL.md` records the wire format and what may change
+  without a version bump; `docs/REMOTE.md` is the setup guide.
+- CI gained a job that installs the daemon into a real WSL distro and asserts
+  that a file edited _inside_ the distro reaches the app.
+
+### Changed
+
+- The crate is now a Cargo workspace: `core/` (watcher, git, previews,
+  snapshots, agents, protocol — no Tauri), `daemon/`, and `src-tauri/` (the
+  desktop app, settings persistence and transport choice). Every operation
+  goes through one `Command` enum answered by one engine, so the local and
+  remote paths cannot drift apart. Local workspaces behave as they did.
+- Per-workspace settings are keyed by location rather than by path, so
+  `/srv/app` on two different SSH hosts are two different workspaces. Existing
+  local entries are unaffected — a local location _is_ its path.
+- Build output moved to `target/` at the repo root, following the workspace.
+- README roadmap corrected: phase 3 (git actions) has been feature-complete
+  since 0.0.8 while still reading "planned".
+
 ## [0.0.8] - 2026-08-01
 
 ### Added

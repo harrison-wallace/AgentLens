@@ -9,7 +9,8 @@ import SettingsPanel from "./components/SettingsPanel";
 import Splitter from "./components/Splitter";
 import StatusBar from "./components/StatusBar";
 import WorkspaceHeader from "./components/WorkspaceHeader";
-import { onFsChanges, onGitStatus, onWatcherStatus } from "./lib/events";
+import { onConnection, onFsChanges, onGitStatus, onWatcherStatus } from "./lib/events";
+import { useConnectionStore } from "./stores/connectionStore";
 import { useFeedStore } from "./stores/feedStore";
 import { useGitStore } from "./stores/gitStore";
 import { useLayoutStore } from "./stores/layoutStore";
@@ -37,9 +38,10 @@ export default function App() {
   useEffect(() => {
     void restore();
     void loadRecent();
-    // App-level settings outlive the workspace, so they load once here rather
-    // than in the per-workspace effect below.
+    // App-level settings and the connection both outlive the workspace, so
+    // they load once here rather than in the per-workspace effect below.
     void useSettingsStore.getState().refreshApp();
+    void useConnectionStore.getState().refresh();
   }, [restore, loadRecent]);
 
   // Subscribed once for the app's lifetime (not per-workspace) so a
@@ -62,11 +64,36 @@ export default function App() {
     const watcherStatus = onWatcherStatus((status) => {
       useWatcherStore.getState().set(status);
     });
+    // A remote link dropping and coming back is the one event that invalidates
+    // everything at once: the daemon that comes back is a new process, so what
+    // is on screen was read from one that no longer exists.
+    const connection = onConnection((info) => {
+      const was = useConnectionStore.getState().info.state;
+      useConnectionStore.getState().apply(info);
+
+      if (info.state === "disconnected" || info.state === "failed") {
+        useFeedStore.getState().beginGap(info.since);
+        return;
+      }
+      // Only a *recovery* invalidates the screen. A first connection is
+      // followed by an open, which resets everything anyway — refreshing here
+      // would read from a backend that has nothing open yet and flash an
+      // error on the way in.
+      if (info.state === "connected" && was === "disconnected") {
+        useFeedStore.getState().endGap(info.since);
+        if (useWorkspaceStore.getState().workspace) {
+          void useTreeStore.getState().reloadLoaded();
+          void useGitStore.getState().refresh();
+          void useWatcherStore.getState().refresh();
+        }
+      }
+    });
 
     return () => {
       void fsChanges.then((unlisten) => unlisten());
       void gitStatus.then((unlisten) => unlisten());
       void watcherStatus.then((unlisten) => unlisten());
+      void connection.then((unlisten) => unlisten());
     };
   }, []);
 

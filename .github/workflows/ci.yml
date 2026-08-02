@@ -13,6 +13,9 @@ concurrency:
 permissions:
   contents: read
 
+# The Cargo workspace lives at the repo root (`core`, `daemon`, `src-tauri`),
+# so every cargo command below runs from there — the app crate alone would
+# skip `core`, where nearly all the logic lives.
 jobs:
   build:
     strategy:
@@ -39,8 +42,6 @@ jobs:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri -> target
 
       - run: npm ci
 
@@ -51,16 +52,13 @@ jobs:
       - run: npm test
 
       - name: cargo fmt --check
-        working-directory: src-tauri
         run: cargo fmt --all --check
 
       - name: cargo clippy
-        working-directory: src-tauri
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: cargo test
-        working-directory: src-tauri
-        run: cargo test
+        run: cargo test --workspace
 
       # CI only needs to prove the app compiles and links; the installers it
       # would produce are discarded. Bundling them cost ~15 min on Linux,
@@ -68,3 +66,70 @@ jobs:
       # release.yml is what actually builds artifacts.
       - name: tauri build (debug, no bundle)
         run: npm run tauri build -- --debug --no-bundle
+
+  # Built here rather than inside the distro below: a Rust build over WSL 1's
+  # Windows-filesystem bridge takes an order of magnitude longer, and this
+  # runner is pinned to the same Ubuntu the distro is, so the binary links
+  # against a glibc it will actually find.
+  daemon-linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo build --release -p agentlens-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agentlens-daemon-linux-x86_64
+          path: target/release/agentlens-daemon
+          if-no-files-found: error
+
+  # The remote path can only be proven by actually crossing a boundary: a
+  # daemon inside a Linux distro, watching that distro's own filesystem,
+  # driven from Windows over `wsl.exe`. Everything else about the remote split
+  # is unit-testable; this is not.
+  wsl-smoke:
+    runs-on: windows-latest
+    needs: daemon-linux
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up WSL
+        uses: Vampire/setup-wsl@v3
+        with:
+          distribution: Ubuntu-24.04
+          # WSL 1: standard GitHub Windows runners have no nested
+          # virtualisation. inotify works on WSL 1's own filesystem, which is
+          # exactly what is under test — `\\wsl$` is the thing that does not.
+          wsl-version: 1
+          set-as-default: "false"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: agentlens-daemon-linux-x86_64
+          path: daemon-bin
+
+      # Artifacts lose their permission bits in the round trip, hence -m755.
+      - name: Install the daemon into the distro
+        shell: wsl-bash {0}
+        run: |
+          set -eux
+          install -Dm755 daemon-bin/agentlens-daemon /usr/local/bin/agentlens-daemon
+          agentlens-daemon --version
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: End-to-end over wsl.exe
+        env:
+          AGENTLENS_WSL_DISTRO: Ubuntu-24.04
+          AGENTLENS_WSL_DAEMON: /usr/local/bin/agentlens-daemon
+        run: >
+          cargo test -p agentlens --lib --
+          --ignored --exact --nocapture
+          backend::child::tests::a_daemon_inside_wsl_reports_changes_made_inside_wsl

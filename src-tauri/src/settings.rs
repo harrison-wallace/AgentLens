@@ -1,81 +1,29 @@
-//! Settings, persisted in the shared store, in two scopes.
+//! Settings persistence, in two scopes.
 //!
-//! *Per workspace* (keyed by root): extra ignore globs and pinned paths. The
-//! globs are gitignore syntax, compiled into the same kind of matcher
-//! `.gitignore` produces, so the tree, the file index, and the watcher can all
-//! apply them the same way.
+//! *Per workspace*, keyed by location (see `remote::format_location`): extra
+//! ignore globs and pinned paths. Keying by location rather than by path is
+//! what keeps `/home/h/proj` on two different SSH hosts from sharing one
+//! entry.
 //!
 //! *Per app*: settings that describe how you work rather than what one repo
 //! contains. Both scopes live in the same store file under separate keys.
+//!
+//! Only storage lives here. The settings *in effect*, and the matcher compiled
+//! from them, belong to whichever backend is doing the observing — see
+//! `agentlens_core::settings`. A daemon has no store of its own; it is told.
 
-use std::path::Path;
-use std::sync::Mutex;
-
-use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use serde_json::json;
 use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
 
-use crate::paths::normalize_absolute;
-use crate::protocol::{AppSettings, WorkspaceSettings};
-use crate::visibility::Visibility;
+use agentlens_core::protocol::{AppSettings, WorkspaceSettings};
 
 const SETTINGS_STORE_FILE: &str = "settings.json";
-/// Object keyed by normalized workspace root, so settings follow the
-/// workspace rather than the app.
+/// Object keyed by workspace location, so settings follow the workspace
+/// rather than the app.
 const WORKSPACE_SETTINGS_KEY: &str = "workspaceSettings";
 /// The app-level scope — one object, not keyed by anything.
 const APP_SETTINGS_KEY: &str = "appSettings";
-
-/// Tauri-managed state holding the settings in effect and the matcher compiled
-/// from them. Kept in memory because `list_dir` consults it on every call and
-/// re-reading the store each time would be silly.
-#[derive(Default)]
-pub struct SettingsState {
-    pub workspace: Mutex<Active>,
-    pub app: Mutex<AppSettings>,
-}
-
-/// The current settings alongside their compiled matcher.
-pub struct Active {
-    pub settings: WorkspaceSettings,
-    pub matcher: Gitignore,
-}
-
-impl Default for Active {
-    fn default() -> Self {
-        Active {
-            settings: WorkspaceSettings::default(),
-            matcher: Gitignore::empty(),
-        }
-    }
-}
-
-/// Compile `settings` into a matcher rooted at `root`. Invalid globs are
-/// skipped rather than failing the whole set — a typo in one line shouldn't
-/// silently disable the others.
-pub fn build_matcher(root: &Path, settings: &WorkspaceSettings) -> Gitignore {
-    let mut builder = GitignoreBuilder::new(root);
-    for glob in &settings.extra_ignores {
-        let trimmed = glob.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        let _ = builder.add_line(None, trimmed);
-    }
-    builder.build().unwrap_or_else(|_| Gitignore::empty())
-}
-
-/// True if `relative` (workspace-relative, forward slashes) is covered by the
-/// extra globs.
-pub fn is_extra_ignored(matcher: &Gitignore, relative: &str, is_dir: bool) -> bool {
-    if relative.is_empty() {
-        return false;
-    }
-    matcher
-        .matched_path_or_any_parents(relative, is_dir)
-        .is_ignore()
-}
 
 /// Read the persisted app-level settings. Missing or unreadable means
 /// defaults, which for this scope is not "everything off".
@@ -89,40 +37,19 @@ pub fn load_app(app: &AppHandle) -> AppSettings {
         .unwrap_or_default()
 }
 
-/// Persist the app-level settings and put them into effect.
-pub fn save_app(app: &AppHandle, state: &SettingsState, value: AppSettings) -> Result<(), String> {
+/// Persist the app-level settings.
+pub fn save_app(app: &AppHandle, value: &AppSettings) -> Result<(), String> {
     let store = app
         .store(SETTINGS_STORE_FILE)
         .map_err(|e| format!("failed to open settings store: {e}"))?;
     store.set(APP_SETTINGS_KEY, json!(value));
     store
         .save()
-        .map_err(|e| format!("failed to save settings store: {e}"))?;
-    set_app(state, value)
+        .map_err(|e| format!("failed to save settings store: {e}"))
 }
 
-/// Replace the in-memory app-level settings without touching the store, for
-/// the startup load.
-pub fn set_app(state: &SettingsState, value: AppSettings) -> Result<(), String> {
-    let mut guard = state.app.lock().map_err(|_| "settings state poisoned")?;
-    *guard = value;
-    Ok(())
-}
-
-/// The app-level settings currently in effect.
-pub fn current_app(state: &SettingsState) -> Result<AppSettings, String> {
-    let guard = state.app.lock().map_err(|_| "settings state poisoned")?;
-    Ok(guard.clone())
-}
-
-/// The visibility rules both scopes add up to — what the tree, the file index,
-/// and the watcher all filter through.
-pub fn current_visibility(state: &SettingsState) -> Result<Visibility, String> {
-    Ok(Visibility::new(&current(state)?, &current_app(state)?))
-}
-
-/// Read the persisted settings for `root`.
-pub fn load(app: &AppHandle, root: &Path) -> WorkspaceSettings {
+/// Read the persisted settings for `location`.
+pub fn load(app: &AppHandle, location: &str) -> WorkspaceSettings {
     let Ok(store) = app.store(SETTINGS_STORE_FILE) else {
         return WorkspaceSettings::default();
     };
@@ -130,14 +57,14 @@ pub fn load(app: &AppHandle, root: &Path) -> WorkspaceSettings {
         .get(WORKSPACE_SETTINGS_KEY)
         .and_then(|value| {
             value
-                .get(normalize_absolute(root))
+                .get(location)
                 .and_then(|entry| serde_json::from_value(entry.clone()).ok())
         })
         .unwrap_or_default()
 }
 
-/// Persist `settings` for `root`, leaving other workspaces' entries alone.
-pub fn save(app: &AppHandle, root: &Path, settings: &WorkspaceSettings) -> Result<(), String> {
+/// Persist `settings` for `location`, leaving other workspaces' entries alone.
+pub fn save(app: &AppHandle, location: &str, settings: &WorkspaceSettings) -> Result<(), String> {
     let store = app
         .store(SETTINGS_STORE_FILE)
         .map_err(|e| format!("failed to open settings store: {e}"))?;
@@ -146,103 +73,10 @@ pub fn save(app: &AppHandle, root: &Path, settings: &WorkspaceSettings) -> Resul
         Some(serde_json::Value::Object(map)) => map,
         _ => serde_json::Map::new(),
     };
-    all.insert(normalize_absolute(root), json!(settings));
+    all.insert(location.to_string(), json!(settings));
 
     store.set(WORKSPACE_SETTINGS_KEY, serde_json::Value::Object(all));
     store
         .save()
-        .map_err(|e| format!("failed to save settings store: {e}"))?;
-    Ok(())
-}
-
-/// Replace the in-memory settings and matcher for `root`.
-pub fn activate(
-    state: &SettingsState,
-    root: &Path,
-    settings: WorkspaceSettings,
-) -> Result<(), String> {
-    let matcher = build_matcher(root, &settings);
-    let mut guard = state
-        .workspace
-        .lock()
-        .map_err(|_| "settings state poisoned")?;
-    *guard = Active { settings, matcher };
-    Ok(())
-}
-
-/// Reset to defaults (workspace closed). App-level settings are deliberately
-/// left alone — they outlive the workspace.
-pub fn deactivate(state: &SettingsState) -> Result<(), String> {
-    let mut guard = state
-        .workspace
-        .lock()
-        .map_err(|_| "settings state poisoned")?;
-    *guard = Active::default();
-    Ok(())
-}
-
-/// The settings currently in effect.
-pub fn current(state: &SettingsState) -> Result<WorkspaceSettings, String> {
-    let guard = state
-        .workspace
-        .lock()
-        .map_err(|_| "settings state poisoned")?;
-    Ok(guard.settings.clone())
-}
-
-/// A clone of the matcher currently in effect, for callers that need to hold
-/// it without keeping the lock (the watcher keeps one for its whole run).
-pub fn current_matcher(state: &SettingsState) -> Gitignore {
-    state
-        .workspace
-        .lock()
-        .map(|guard| guard.matcher.clone())
-        .unwrap_or_else(|_| Gitignore::empty())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn settings(globs: &[&str]) -> WorkspaceSettings {
-        WorkspaceSettings {
-            extra_ignores: globs.iter().map(|g| g.to_string()).collect(),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn matches_extra_globs_including_parents() {
-        let root = Path::new("/workspace");
-        let matcher = build_matcher(root, &settings(&["*.tmp", "build/"]));
-
-        assert!(is_extra_ignored(&matcher, "scratch.tmp", false));
-        assert!(is_extra_ignored(&matcher, "build", true));
-        assert!(is_extra_ignored(&matcher, "build/out.js", false));
-        assert!(!is_extra_ignored(&matcher, "src/main.rs", false));
-    }
-
-    #[test]
-    fn skips_blank_lines_and_comments() {
-        let root = Path::new("/workspace");
-        let matcher = build_matcher(root, &settings(&["", "   ", "# a comment", "*.tmp"]));
-
-        assert!(is_extra_ignored(&matcher, "a.tmp", false));
-        assert!(!is_extra_ignored(&matcher, "# a comment", false));
-    }
-
-    #[test]
-    fn one_bad_glob_does_not_disable_the_rest() {
-        let root = Path::new("/workspace");
-        let matcher = build_matcher(root, &settings(&["[unclosed", "*.tmp"]));
-
-        assert!(is_extra_ignored(&matcher, "a.tmp", false));
-    }
-
-    #[test]
-    fn empty_settings_ignore_nothing() {
-        let matcher = build_matcher(Path::new("/workspace"), &WorkspaceSettings::default());
-        assert!(!is_extra_ignored(&matcher, "src/main.rs", false));
-        assert!(!is_extra_ignored(&matcher, "", true));
-    }
+        .map_err(|e| format!("failed to save settings store: {e}"))
 }

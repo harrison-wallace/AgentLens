@@ -1,3 +1,4 @@
 dist/
+/target/
 src-tauri/target/
 package-lock.json

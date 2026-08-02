@@ -25,6 +25,12 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::gitstatus;
+use crate::ignores::is_extra_ignored;
+use crate::paths::{resolve_in_workspace, to_workspace_relative};
+use crate::protocol::{FsEvent, FsEventKind, GitStatusSnapshot, WatcherState, WatcherStatus};
+use crate::tree::BUILTIN_IGNORED_DIRS;
+use crate::visibility::Visibility;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use ignore::WalkBuilder;
 use notify::event::ModifyKind;
@@ -32,21 +38,22 @@ use notify::{EventKind, RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{
     new_debouncer, DebounceEventResult, DebouncedEvent, Debouncer, RecommendedCache,
 };
-use tauri::{AppHandle, Emitter, Manager};
-
-use crate::gitstatus;
-use crate::paths::{resolve_in_workspace, to_workspace_relative};
-use crate::protocol::{
-    FsEvent, FsEventKind, WatcherState, WatcherStatus, EVENT_FS_CHANGES, EVENT_GIT_STATUS,
-    EVENT_WATCHER_STATUS,
-};
-use crate::settings::is_extra_ignored;
-use crate::tree::BUILTIN_IGNORED_DIRS;
-use crate::visibility::Visibility;
 
 /// Maximum number of distinct paths emitted per batch; excess is dropped
 /// (by first-seen order) rather than flooding the UI.
 const MAX_BATCH: usize = 500;
+
+/// Where the watcher's output goes.
+///
+/// The watcher does not know what a window is. In the desktop app this
+/// forwards to Tauri events; running headless it will write protocol messages
+/// to stdout instead. Keeping it a trait is what lets the same watcher serve
+/// both without a line of conditional code.
+pub trait EventSink: Send + Sync + 'static {
+    fn fs_changes(&self, events: &[FsEvent]);
+    fn git_status(&self, snapshot: &GitStatusSnapshot);
+    fn watcher_status(&self, status: &WatcherStatus);
+}
 
 /// Everything that decides whether a path reaches the feed, kept together so
 /// the watch registration and the event filter can't disagree about it.
@@ -153,7 +160,12 @@ pub fn status(manager: &WatcherManager) -> WatcherStatus {
 /// Watching every descendant directory means walking the workspace, which on
 /// a large repo takes seconds cold, so it happens on the background thread
 /// instead; `open_workspace` must not wait for it.
-pub fn start(app: &AppHandle, manager: &WatcherManager, root: &Path, filters: Filters) {
+pub fn start(
+    sink: &Arc<dyn EventSink>,
+    manager: &Arc<WatcherManager>,
+    root: &Path,
+    filters: Filters,
+) {
     let generation = manager.generation.fetch_add(1, Ordering::SeqCst) + 1;
     stop_internal(manager);
 
@@ -162,7 +174,7 @@ pub fn start(app: &AppHandle, manager: &WatcherManager, root: &Path, filters: Fi
     let mut debouncer = match new_debouncer(Duration::from_millis(300), None, tx) {
         Ok(d) => d,
         Err(e) => {
-            fail(app, manager, format!("failed to start watcher: {e}"));
+            fail(sink, manager, format!("failed to start watcher: {e}"));
             return;
         }
     };
@@ -174,7 +186,7 @@ pub fn start(app: &AppHandle, manager: &WatcherManager, root: &Path, filters: Fi
     // watcher down — and every write inside those directories would wake this
     // process just to be filtered out again.
     if let Err(e) = debouncer.watch(root, RecursiveMode::NonRecursive) {
-        fail(app, manager, format!("failed to watch workspace: {e}"));
+        fail(sink, manager, format!("failed to watch workspace: {e}"));
         return;
     }
     watch_git_dir(&mut debouncer, root);
@@ -183,7 +195,8 @@ pub fn start(app: &AppHandle, manager: &WatcherManager, root: &Path, filters: Fi
         *guard = Some(debouncer);
     }
 
-    let app_for_thread = app.clone();
+    let sink_for_thread = Arc::clone(sink);
+    let manager_for_thread = Arc::clone(manager);
     let root_for_thread = root.to_path_buf();
     let generation_handle = Arc::clone(&manager.generation);
     std::thread::spawn(move || {
@@ -191,7 +204,7 @@ pub fn start(app: &AppHandle, manager: &WatcherManager, root: &Path, filters: Fi
         // command thread. Until this returns only the root is covered, so a
         // write deep in the tree during the first moments of a session can be
         // missed; root events are not lost, they queue in `rx`.
-        register_descendant_watches(&app_for_thread, &root_for_thread, generation, &filters);
+        register_descendant_watches(&manager_for_thread, &root_for_thread, generation, &filters);
 
         while let Ok(result) = rx.recv() {
             if generation_handle.load(Ordering::SeqCst) != generation {
@@ -199,7 +212,8 @@ pub fn start(app: &AppHandle, manager: &WatcherManager, root: &Path, filters: Fi
             }
             match result {
                 Ok(events) => handle_batch(
-                    &app_for_thread,
+                    &sink_for_thread,
+                    &manager_for_thread,
                     &root_for_thread,
                     &filters,
                     generation,
@@ -219,11 +233,11 @@ pub fn start(app: &AppHandle, manager: &WatcherManager, root: &Path, filters: Fi
         message: None,
     };
     manager.set_status(running.clone());
-    let _ = app.emit(EVENT_WATCHER_STATUS, &running);
+    sink.watcher_status(&running);
 }
 
 /// Stop watching, if a watch is active.
-pub fn stop(app: &AppHandle, manager: &WatcherManager) {
+pub fn stop(sink: &Arc<dyn EventSink>, manager: &WatcherManager) {
     manager.generation.fetch_add(1, Ordering::SeqCst);
     stop_internal(manager);
     let off = WatcherStatus {
@@ -231,7 +245,7 @@ pub fn stop(app: &AppHandle, manager: &WatcherManager) {
         message: None,
     };
     manager.set_status(off.clone());
-    let _ = app.emit(EVENT_WATCHER_STATUS, &off);
+    sink.watcher_status(&off);
 }
 
 fn stop_internal(manager: &WatcherManager) {
@@ -240,13 +254,13 @@ fn stop_internal(manager: &WatcherManager) {
     }
 }
 
-fn fail(app: &AppHandle, manager: &WatcherManager, message: String) {
+fn fail(sink: &Arc<dyn EventSink>, manager: &WatcherManager, message: String) {
     let status = WatcherStatus {
         state: WatcherState::Error,
         message: Some(message),
     };
     manager.set_status(status.clone());
-    let _ = app.emit(EVENT_WATCHER_STATUS, &status);
+    sink.watcher_status(&status);
 }
 
 /// Build a gitignore matcher from the workspace root's `.gitignore` and
@@ -328,7 +342,12 @@ fn watchable_dirs(from: &Path, show_ignored: bool) -> Vec<PathBuf> {
 /// would never get a watch and its changes would never glow in the tree that
 /// is showing it. Each pinned directory therefore gets its own walk, which
 /// costs nothing when nothing is pinned.
-fn register_descendant_watches(app: &AppHandle, root: &Path, generation: u64, filters: &Filters) {
+fn register_descendant_watches(
+    manager: &WatcherManager,
+    root: &Path,
+    generation: u64,
+    filters: &Filters,
+) {
     let mut dirs = watchable_dirs_parallel(root, filters.visibility.show_ignored);
     if !filters.visibility.show_ignored {
         for pin in &filters.visibility.pinned {
@@ -344,7 +363,6 @@ fn register_descendant_watches(app: &AppHandle, root: &Path, generation: u64, fi
         dirs.dedup();
     }
 
-    let manager = app.state::<WatcherManager>();
     // The workspace can be closed or swapped while the walk is in flight.
     if manager.generation.load(Ordering::SeqCst) != generation {
         return;
@@ -385,7 +403,7 @@ fn watch_git_dir(debouncer: &mut Debouncer<RecommendedWatcher, RecommendedCache>
 /// did. Those entries are synthesized as `Created` so the feed matches what
 /// the disk actually gained.
 fn adopt_new_dirs(
-    app: &AppHandle,
+    manager: &WatcherManager,
     root: &Path,
     filters: &Filters,
     batch: &[FsEvent],
@@ -405,7 +423,6 @@ fn adopt_new_dirs(
         return Vec::new();
     }
 
-    let manager = app.state::<WatcherManager>();
     // A workspace switch between this batch arriving and now must not graft
     // the old workspace's directories onto the new watch.
     if manager.generation.load(Ordering::SeqCst) != generation {
@@ -556,7 +573,8 @@ fn touches_git_dir(relative: &str) -> bool {
 /// no feed rows, but git status still has to be re-read, otherwise staging
 /// and committing would leave the badges stale until an unrelated edit.
 fn handle_batch(
-    app: &AppHandle,
+    sink: &Arc<dyn EventSink>,
+    manager: &WatcherManager,
     root: &Path,
     filters: &Filters,
     generation: u64,
@@ -581,17 +599,17 @@ fn handle_batch(
     if !batch.is_empty() {
         // Adopting first means content that arrived with a new directory is
         // part of the same emitted batch rather than a second one.
-        let adopted = adopt_new_dirs(app, root, filters, &batch, generation, at);
+        let adopted = adopt_new_dirs(manager, root, filters, &batch, generation, at);
         let batch = if adopted.is_empty() {
             batch
         } else {
             coalesce([batch, adopted].concat(), MAX_BATCH)
         };
-        let _ = app.emit(EVENT_FS_CHANGES, &batch);
+        sink.fs_changes(&batch);
     }
 
     if let Ok(snapshot) = gitstatus::status(root) {
-        let _ = app.emit(EVENT_GIT_STATUS, &snapshot);
+        sink.git_status(&snapshot);
     }
 }
 
@@ -784,7 +802,7 @@ mod tests {
     #[test]
     fn extra_globs_apply_regardless_of_the_show_ignored_toggle() {
         let dir = tempfile::tempdir().unwrap();
-        let extra = crate::settings::build_matcher(
+        let extra = crate::ignores::build_matcher(
             dir.path(),
             &crate::protocol::WorkspaceSettings {
                 extra_ignores: vec!["*.tmp".to_string(), "vendor/".to_string()],

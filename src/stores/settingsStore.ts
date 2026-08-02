@@ -16,7 +16,11 @@ function toErrorMessage(err: unknown): string {
 
 const EMPTY: WorkspaceSettings = { extraIgnores: [], showIgnored: false, pinned: [] };
 /** Only used before the first read lands; the backend owns the real default. */
-const EMPTY_APP: AppSettings = { showAgentContext: true, agentRoots: [] };
+const EMPTY_APP: AppSettings = {
+  showAgentContext: true,
+  agentRoots: [],
+  daemonCommand: "agentlens-daemon",
+};
 
 interface SettingsStore {
   /** Scoped to the open workspace. */
@@ -43,6 +47,8 @@ interface SettingsStore {
   toggleShowAgentContext: () => Promise<boolean>;
   /** Replaces the extra directories searched for agent sessions. */
   setAgentRoots: (roots: string[]) => Promise<boolean>;
+  /** Replaces what is run on the far side of a WSL or SSH connection. */
+  setDaemonCommand: (command: string) => Promise<boolean>;
   /** Pins `path` if it isn't already, unpins it if it is. */
   togglePin: (path: string) => Promise<boolean>;
   isPinned: (path: string) => boolean;
@@ -166,6 +172,17 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   setAgentRoots: async (roots) =>
     persist(set, async () => ({
       app: await setAppSettings({ ...get().app, agentRoots: roots }),
+    })),
+
+  // Takes effect on the *next* connection: a daemon already running was
+  // started by the old command and re-spawning it under the user's cursor
+  // would drop their session to fix a setting they may be mid-typing.
+  setDaemonCommand: async (command) =>
+    persist(set, async () => ({
+      app: await setAppSettings({
+        ...get().app,
+        daemonCommand: command.trim() || EMPTY_APP.daemonCommand,
+      }),
     })),
 
   isPinned: (path) => get().settings.pinned.includes(path),
