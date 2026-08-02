@@ -317,12 +317,18 @@ fn remote_shell(target: &ConnectionTarget, script: &str) -> Option<(String, Vec<
 
 /// Base64-wrap `script` so it reaches a remote `sh` with `$` and quotes intact.
 ///
-/// `printf '%s' '…' | base64 -d | sh` is one line; the alphabet has no `'`, so
-/// single-quoting the payload is safe. GNU coreutils and busybox both accept
-/// `base64 -d`.
+/// Decoded to a temp file and `exec sh` on that file — **not** piped into
+/// `sh`. Piping would make the script stdin of the inner shell, so when the
+/// bootstrap `exec`s the daemon it would inherit the closed pipe instead of
+/// the protocol stdio from `wsl.exe` / `ssh` ("lost the connection").
+///
+/// The alphabet has no `'`, so single-quoting the payload is safe. GNU
+/// coreutils and busybox both accept `base64 -d`.
 fn pack_script(script: &str) -> String {
     let b64 = base64_encode(script.as_bytes());
-    format!("printf '%s' '{b64}' | base64 -d | sh")
+    format!(
+        "t=\"${{TMPDIR:-/tmp}}/agentlens-run.$$\"; printf '%s' '{b64}' | base64 -d >\"$t\" && exec sh \"$t\""
+    )
 }
 
 fn base64_encode(input: &[u8]) -> String {
@@ -550,12 +556,49 @@ mod tests {
         // mean `$HOME` after it has crossed into a remote `sh`.
         let script = r#"echo "HOME=$HOME"; echo ok"#;
         let packed = pack_script(script);
-        assert!(packed.starts_with("printf '%s' '"));
-        assert!(packed.ends_with("' | base64 -d | sh"));
+        assert!(
+            packed.contains("base64 -d"),
+            "must decode the payload: {packed}"
+        );
+        assert!(
+            packed.contains("exec sh"),
+            "must exec so the daemon inherits protocol stdio: {packed}"
+        );
         assert!(
             !packed.contains("$HOME"),
             "payload must not leak into the wrapper: {packed}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pack_script_keeps_stdin_for_the_inner_script() {
+        // Prove we did not pipe the script into `sh` (which would steal stdin).
+        // The packed wrapper should still be able to read a line from stdin
+        // after starting — matching how the daemon needs the protocol pipe.
+        let script = r#"read line; echo "got:$line""#;
+        let packed = pack_script(script);
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&packed)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        use std::io::Write;
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(b"protocol\n")
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(
+            out.status.success(),
+            "stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "got:protocol");
     }
 
     #[test]

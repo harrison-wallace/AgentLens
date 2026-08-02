@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `wsl.exe` / `ssh`, so `$HOME` / `$TMP` are not expanded or stripped on the
   Windows side; install vars use `al_*` names to avoid Windows-imported `TMP`.
   Affects every Linux WSL distro and SSH host, not only Debian.
+- **Packed scripts keep protocol stdio.** Decode to a temp file and `exec sh`
+  on it rather than piping into `sh`, so the daemon still inherits the pipe
+  from `wsl.exe` / `ssh` (piping stole stdin and caused "lost the connection").
 
 ## [0.5.0] - 2026-08-02
 
