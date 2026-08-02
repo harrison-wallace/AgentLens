@@ -31,6 +31,12 @@ Three invariants the transport depends on:
   file previews, commit messages — so this is a property of the encoding, and
   it is covered by tests in `daemon/tests/stdio.rs`.
 
+Field names are camelCase throughout, with one exception: fields _inside_ a
+command object are snake_case, so the handshake is
+`{"cmd":"hello","protocol_version":1}`. `protocolVersion` is accepted as an
+alias, so a future version can unify the two spellings without breaking
+daemons already in the field.
+
 Requests carry an `id` and may be answered out of order. Ordering between
 _concurrent_ requests is the caller's responsibility, as with any async
 transport; the app awaits each dependent command before issuing the next.
@@ -40,7 +46,7 @@ exits 0.
 
 ## The handshake
 
-`Hello { protocolVersion }` is the first command on any connection, and the
+`Hello { protocol_version }` is the first command on any connection, and the
 daemon answers with its own name, version, protocol version, and capability
 list. A mismatch is refused there and then, with a message naming both
 versions — the alternative is a session that half-works in ways nobody can

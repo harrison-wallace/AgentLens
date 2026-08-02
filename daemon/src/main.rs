@@ -24,8 +24,9 @@
 //! each dependent command before issuing the next.
 
 use std::io::{BufRead, BufReader, Stdout, Write};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use agentlens_core::engine::Engine;
 use agentlens_core::protocol::{
@@ -77,10 +78,22 @@ fn main() {
     }
 }
 
+/// How long a shutdown waits for requests that are still being answered.
+///
+/// Bounded rather than unconditional: the app is entitled to a reply to
+/// everything it asked for, but a command wedged on a hung filesystem must not
+/// keep the process alive after the connection it belonged to has gone.
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Read frames until stdin closes, then stop watching and go.
 fn serve() {
     let out = Arc::new(Out::new());
     let engine = Arc::new(Engine::new(Arc::new(StdoutSink(Arc::clone(&out)))));
+    // Requests are handled off-thread, so the read loop reaching EOF does not
+    // mean the work is finished. Without this the process can exit between a
+    // command being read and its answer being written, and the app waits out
+    // its timeout for a reply that was computed and thrown away.
+    let in_flight = Arc::new(AtomicUsize::new(0));
 
     let beat = Arc::clone(&out);
     std::thread::spawn(move || loop {
@@ -99,7 +112,17 @@ fn serve() {
         }
         let engine = Arc::clone(&engine);
         let out = Arc::clone(&out);
-        std::thread::spawn(move || out.frame(&respond(&engine, &line)));
+        let counter = Arc::clone(&in_flight);
+        counter.fetch_add(1, Ordering::SeqCst);
+        std::thread::spawn(move || {
+            out.frame(&respond(&engine, &line));
+            counter.fetch_sub(1, Ordering::SeqCst);
+        });
+    }
+
+    let deadline = Instant::now() + DRAIN_TIMEOUT;
+    while in_flight.load(Ordering::SeqCst) > 0 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
     }
 
     engine.shutdown();

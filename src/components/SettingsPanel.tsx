@@ -22,6 +22,7 @@ export default function SettingsPanel() {
   const setPinned = useSettingsStore((s) => s.setPinned);
   const toggleShowIgnored = useSettingsStore((s) => s.toggleShowIgnored);
   const toggleShowAgentContext = useSettingsStore((s) => s.toggleShowAgentContext);
+  const toggleAutoInstallDaemon = useSettingsStore((s) => s.toggleAutoInstallDaemon);
 
   // Esc closes; there is nothing to lose by closing, since every control here
   // has already applied.
@@ -100,6 +101,13 @@ export default function SettingsPanel() {
         </Section>
 
         <Section title="Remote">
+          <Toggle
+            label="Set up remote machines automatically"
+            description="Install the AgentLens observer on a WSL distro or SSH host that hasn't got one, instead of failing with instructions."
+            checked={app.autoInstallDaemon}
+            disabled={saving}
+            onChange={() => void toggleAutoInstallDaemon()}
+          />
           <DaemonCommand />
         </Section>
 
@@ -190,8 +198,9 @@ function DaemonCommand() {
         Daemon command
       </label>
       <p className="text-xs text-text-muted">
-        Run on the remote machine to start the observer. Use an absolute path if it is not on the
-        non-interactive <code>PATH</code>. Applies to the next connection.
+        Leave this alone unless AgentLens can't work it out. It normally finds or installs the
+        observer itself; naming a command here runs exactly that instead. Applies to the next
+        connection.
       </p>
       <TextField
         id="daemon-command"

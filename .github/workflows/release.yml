@@ -104,11 +104,49 @@ jobs:
           [ -f "$src" ] || src="$src.exe"
           cp "$src" "${{ matrix.asset }}"
 
+      # Uploaded per-target and concatenated below, because the three builds
+      # run on different machines and never see each other's binaries.
+      - name: Checksum
+        shell: bash
+        run: sha256sum "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sha256-${{ matrix.asset }}
+          path: ${{ matrix.asset }}.sha256
+          if-no-files-found: error
+
       # Same draft release the installers land in, so a release is one place.
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           draft: true
           files: ${{ matrix.asset }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # A remote installing its own daemon has no way to know it got what we built
+  # unless we say so somewhere it can fetch. One file covering every daemon
+  # binary, in the format `sha256sum -c` already understands.
+  checksums:
+    needs: daemon
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sha256-*
+          merge-multiple: true
+
+      - name: Combine
+        run: |
+          set -eux
+          cat ./*.sha256 | sort -k2 > SHA256SUMS
+          cat SHA256SUMS
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          draft: true
+          files: SHA256SUMS
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

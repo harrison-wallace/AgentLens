@@ -13,7 +13,13 @@ export type ConnectionTarget =
   { kind: "local" } | { kind: "wsl"; distro: string } | { kind: "ssh"; host: string };
 
 /** Liveness of the backend connection. */
-export type ConnectionState = "connecting" | "connected" | "disconnected" | "failed";
+export type ConnectionState =
+  | "connecting"
+  /** Putting a daemon on a remote that hasn't got one. */
+  | "installing"
+  | "connected"
+  | "disconnected"
+  | "failed";
 
 /** The current backend connection, surfaced in the status bar. */
 export interface ConnectionInfo {
@@ -64,6 +70,31 @@ export interface PinnedEntry {
   isDir: boolean;
   /** False for a pin whose target has been renamed or deleted. */
   exists: boolean;
+}
+
+/**
+ * One directory offered by the folder picker. Absolute, unlike everything
+ * else here, because it is chosen *before* there is a workspace to be
+ * relative to.
+ */
+export interface BrowseEntry {
+  name: string;
+  /** Absolute path on the backend's machine, forward slashes. */
+  path: string;
+  /** This directory is a git repository — the most useful thing to know when
+   * picking one out of a list of twenty. */
+  isRepository: boolean;
+}
+
+/** One directory's worth of the folder picker. */
+export interface BrowseListing {
+  /** Absolute path of the directory that was listed. */
+  path: string;
+  /** `null` at the filesystem root, which is where "go up" stops. */
+  parent: string | null;
+  entries: BrowseEntry[];
+  /** The directory held more than the listing cap. */
+  truncated: boolean;
 }
 
 /** How git sees one file. */
@@ -180,6 +211,11 @@ export interface AppSettings {
    * login shell, so an absolute path is often needed.
    */
   daemonCommand: string;
+  /**
+   * Install the daemon on a remote that hasn't got one, rather than failing
+   * with instructions. On by default.
+   */
+  autoInstallDaemon: boolean;
 }
 
 /** Which coding agent a session belongs to. */

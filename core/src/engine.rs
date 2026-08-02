@@ -24,7 +24,7 @@ use crate::settings::{self, SettingsState};
 use crate::snapshots::{self, SessionState};
 use crate::watcher::{self, EventSink, WatcherManager};
 use crate::workspace::{self, WorkspaceState};
-use crate::{gitops, gitstatus, preview, tree};
+use crate::{browse, gitops, gitstatus, preview, tree};
 
 /// The observing half of AgentLens, driven by commands.
 pub struct Engine {
@@ -104,6 +104,9 @@ impl Engine {
                     &settings::current_visibility(&self.settings)?,
                 ))
             }
+            // No workspace required, unlike every other listing: this is how a
+            // workspace gets chosen in the first place.
+            Command::BrowseDir { path } => ok(browse::list(path.as_deref())?),
             Command::PinnedEntries => {
                 let ws = workspace::current(&self.workspace)?;
                 ok(tree::pinned_entries(

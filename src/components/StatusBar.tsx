@@ -24,6 +24,7 @@ function connectionClass(state: ConnectionState): string {
     case "connected":
       return "text-text-muted";
     case "connecting":
+    case "installing":
       return "text-git-modified";
     case "disconnected":
     case "failed":

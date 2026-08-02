@@ -20,6 +20,7 @@ const EMPTY_APP: AppSettings = {
   showAgentContext: true,
   agentRoots: [],
   daemonCommand: "agentlens-daemon",
+  autoInstallDaemon: true,
 };
 
 interface SettingsStore {
@@ -49,6 +50,8 @@ interface SettingsStore {
   setAgentRoots: (roots: string[]) => Promise<boolean>;
   /** Replaces what is run on the far side of a WSL or SSH connection. */
   setDaemonCommand: (command: string) => Promise<boolean>;
+  /** Flips whether a remote without a daemon gets one installed for it. */
+  toggleAutoInstallDaemon: () => Promise<boolean>;
   /** Pins `path` if it isn't already, unpins it if it is. */
   togglePin: (path: string) => Promise<boolean>;
   isPinned: (path: string) => boolean;
@@ -182,6 +185,14 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       app: await setAppSettings({
         ...get().app,
         daemonCommand: command.trim() || EMPTY_APP.daemonCommand,
+      }),
+    })),
+
+  toggleAutoInstallDaemon: async () =>
+    persist(set, async () => ({
+      app: await setAppSettings({
+        ...get().app,
+        autoInstallDaemon: !get().app.autoInstallDaemon,
       }),
     })),
 

@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-02
+
+Remote machines now set themselves up, and you can browse them to find the
+folder you want.
+
+### Added
+
+- **Nothing to install on the remote machine.** Open a workspace on a WSL
+  distro or SSH host that has never run AgentLens and the app puts the observer
+  there itself: it downloads the matching binary on the remote, verifies it
+  against the release's `SHA256SUMS`, installs it under
+  `~/.agentlens/bin/<version>/`, and prunes older versions once the new one
+  works. No `sudo`, nothing outside your own home directory, and a status-bar
+  _installing_ state while it happens. Turn it off with **Settings → Remote →
+  Set up remote machines automatically**.
+- **A folder browser for machines you aren't sitting at.** There is no OS file
+  dialog for a WSL distro or an SSH host, so **Browse…** lists the remote's own
+  directories a level at a time, starting at your home directory and marking
+  which candidates are git repositories. Typing the path still works and is
+  faster when you know it.
+- `SHA256SUMS` is published alongside the daemon binaries, so a remote
+  installing its own copy can check it got what was built.
+
+### Changed
+
+- **The app no longer depends on the remote `PATH`.** It runs a small bootstrap
+  that looks for the daemon where AgentLens installs it, then `~/.local/bin`,
+  `/usr/local/bin`, `/usr/bin`, then `PATH` — so a hand-placed binary in any of
+  those is found without configuration. **Daemon command** is now the escape
+  hatch rather than the fix, and naming one runs exactly that, skipping the
+  search and the automatic install.
+- While connected to another machine, **Open folder** browses _that_ machine.
+  It previously opened a local file dialog, and picking anything from it
+  silently dropped the connection.
+
+### Fixed
+
+- The daemon could exit between reading a command and writing its answer.
+  Requests are handled off-thread, so stdin closing did not mean the work was
+  done — to the app that looked like a hang until the 30-second timeout, and it
+  happened whenever a connection closed just after a command. Shutdown now
+  drains what is in flight.
+- A failed handshake could miss the remote's explanation. The handshake fails
+  when stdout closes, with no ordering against stderr having been read, so the
+  line saying _why_ was sometimes lost — and with it the app's ability to tell
+  "no daemon there" from "the connection broke". It now waits for stderr to
+  finish first.
+- A host or distro name beginning with `-` is refused rather than passed to
+  `ssh`, which has no `--` to end option parsing and would have read
+  `-oProxyCommand=…` as an instruction.
+- Killing a remote connection no longer waits on a write that a wedged daemon
+  is refusing to read, which could hang the app on exit.
+- A half-open connection attempt no longer leaves its process running; a few
+  failed reconnects would otherwise strand a handful of `ssh` sessions.
+
 ## [0.1.0] - 2026-08-02
 
 The MVP: AgentLens now works when the files are on another machine.

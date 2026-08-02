@@ -117,6 +117,16 @@ fn list_files(state: State<BackendState>) -> CommandResult<Value> {
     send(&state, Command::ListFiles)
 }
 
+/// Directories on the connected machine, for choosing a workspace on it.
+///
+/// The only listing that needs no workspace open, because it is what happens
+/// before there is one — and the only reason the app can offer a folder picker
+/// for a machine it isn't sitting at.
+#[tauri::command]
+fn browse_dir(path: Option<String>, state: State<BackendState>) -> CommandResult<Value> {
+    send(&state, Command::BrowseDir { path })
+}
+
 #[tauri::command]
 fn git_status(state: State<BackendState>) -> CommandResult<Value> {
     send(&state, Command::GitStatus)
@@ -290,12 +300,21 @@ fn connection(state: State<BackendState>) -> CommandResult<ConnectionInfo> {
     Ok(state.current()?.info())
 }
 
-/// Back to observing this machine.
+/// Point the app at another machine without opening anything yet.
 ///
-/// There is no matching `connect` command: `open_workspace` connects wherever
-/// the location it is given points, which is the only time pointing the app at
-/// another machine is useful. Coming back has no location to hang off, so it
-/// gets one of its own.
+/// Needed because the folder picker has to *browse* that machine before a
+/// workspace on it can be chosen. `open_workspace` still connects on its own
+/// when handed a location, so typing or clicking a recent entry skips this.
+#[tauri::command]
+fn connect(
+    target: ConnectionTarget,
+    state: State<BackendState>,
+    app: AppHandle,
+) -> CommandResult<ConnectionInfo> {
+    connect_to(target, &state, &app)
+}
+
+/// Back to observing this machine.
 #[tauri::command]
 fn disconnect(state: State<BackendState>, app: AppHandle) -> CommandResult<ConnectionInfo> {
     connect_to(ConnectionTarget::Local, &state, &app)
@@ -316,6 +335,7 @@ fn connect_to(
         _ => Arc::new(ChildProcess::connect(
             target.clone(),
             stored.daemon_command.clone(),
+            stored.auto_install_daemon,
             events,
         )?),
     };
@@ -340,6 +360,7 @@ pub fn run() {
             current_workspace,
             list_dir,
             list_files,
+            browse_dir,
             git_status,
             git_capabilities,
             git_stage,
@@ -367,6 +388,7 @@ pub fn run() {
             recent_workspaces,
             watcher_status,
             connection,
+            connect,
             disconnect,
             wsl_distros,
         ])

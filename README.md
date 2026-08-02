@@ -2,7 +2,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/harrison-wallace/AgentLens/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/harrison-wallace/AgentLens/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/actions/workflow/status/harrison-wallace/AgentLens/release.yml?style=flat-square&label=release)](https://github.com/harrison-wallace/AgentLens/actions/workflows/release.yml)
-[![Version](https://img.shields.io/badge/version-0.1.0-6366f1?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.2.0-6366f1?style=flat-square)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 
 [![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app)
@@ -16,9 +16,9 @@ read-only window into what your terminal coding agent (Claude Code, opencode,
 …) is doing to a directory: live file tree, change feed, git status,
 read-only previews. Runs on Windows and Ubuntu.
 
-**Status:** v0.1.0 — the MVP feature set is complete, including remote
-workspaces over WSL and SSH. Still pre-alpha: acceptance testing on Windows
-and Ubuntu is outstanding.
+**Status:** v0.2.0 — the MVP feature set is complete, including remote
+workspaces over WSL and SSH with no manual setup on the remote machine. Still
+pre-alpha: acceptance testing on Windows and Ubuntu is outstanding.
 
 <!-- TODO: screenshot once Phase 1 (local observer) lands -->
 
@@ -42,11 +42,12 @@ and Ubuntu is outstanding.
   branches, stash and pop, without leaving the app. Mutations go through the
   `git` CLI, so your hooks run and your config is honoured exactly as in the
   terminal.
-- **Remote workspaces** — observe a WSL distro from the Windows app, or a Linux
-  box over SSH, with the same tree, feed, git decorations and actions. A small
-  headless daemon runs where the files are and streams over stdio: no ports, no
-  tunnels, and SSH auth is your own `ssh` binary's. See
-  [docs/REMOTE.md](docs/REMOTE.md).
+- **Remote workspaces, with no setup** — observe a WSL distro from the Windows
+  app, or a Linux box over SSH, with the same tree, feed, git decorations and
+  actions. A small headless daemon runs where the files are and streams over
+  stdio: no ports, no tunnels, and SSH auth is your own `ssh` binary's. If the
+  machine has never run AgentLens, the app installs the daemon there itself.
+  See [docs/REMOTE.md](docs/REMOTE.md).
 - **`Ctrl+P` file jump**, arrow-key tree navigation, resizable and
   collapsible panels, and per-workspace extra ignore globs.
 
@@ -74,14 +75,15 @@ Three rules follow from that, and they explain most of the design:
 
 Settings are split by what they affect, not where they're stored.
 
-| Scope              | Setting                | Purpose                                                                            |
-| ------------------ | ---------------------- | ---------------------------------------------------------------------------------- |
-| **This workspace** | Show git-ignored files | Reveal everything `.gitignore` hides. An escape hatch, not an everyday setting.    |
-| **This workspace** | Pinned paths           | Files and directories kept visible and grouped at the top of the tree.             |
-| **This workspace** | Extra ignore globs     | Gitignore syntax; hidden from the tree, the file jump, and the activity feed.      |
-| **All workspaces** | Show agent context     | Surface `AGENTS.md`, `CLAUDE.md` and friends even when git ignores them.           |
-| **All workspaces** | Agent session folders  | Where to look for coding-agent sessions. Detected automatically; add your own.     |
-| **Remote**         | Daemon command         | What to run on a WSL distro or SSH host. An absolute path when it isn't on `PATH`. |
+| Scope              | Setting                       | Purpose                                                                         |
+| ------------------ | ----------------------------- | ------------------------------------------------------------------------------- |
+| **This workspace** | Show git-ignored files        | Reveal everything `.gitignore` hides. An escape hatch, not an everyday setting. |
+| **This workspace** | Pinned paths                  | Files and directories kept visible and grouped at the top of the tree.          |
+| **This workspace** | Extra ignore globs            | Gitignore syntax; hidden from the tree, the file jump, and the activity feed.   |
+| **All workspaces** | Show agent context            | Surface `AGENTS.md`, `CLAUDE.md` and friends even when git ignores them.        |
+| **All workspaces** | Agent session folders         | Where to look for coding-agent sessions. Detected automatically; add your own.  |
+| **Remote**         | Set up machines automatically | Install the observer on a WSL distro or SSH host that hasn't got one.           |
+| **Remote**         | Daemon command                | Run exactly this on the remote instead. The escape hatch; normally unset.       |
 
 Panel widths and collapse state are view state, not configuration — they're
 remembered automatically and stay out of the settings dialog.
@@ -96,8 +98,8 @@ remembered automatically and stay out of the settings dialog.
 | 3     | Git actions + polish — stage/commit/branch/stash, diff view, command palette       | Feature-complete |
 | 4     | Remote — headless daemon for WSL-from-Windows and SSH                              | Feature-complete |
 
-Everything up to and including phase 3 ships as `0.0.x`. `v0.1.0` is tagged
-when phase 4 lands and the MVP is complete.
+Everything up to and including phase 3 shipped as `0.0.x`. `v0.1.0` marked
+phase 4 landing and the MVP being complete.
 
 ## Install
 
@@ -106,9 +108,9 @@ Download the installer for your platform from
 Windows installers are unsigned, so SmartScreen will warn before you can run
 them — this is expected until code signing lands.
 
-To observe a WSL distro or an SSH host, also put `agentlens-daemon` on that
-machine — one binary, no dependencies, published alongside the installers.
-[docs/REMOTE.md](docs/REMOTE.md) has the copy-paste one-liner.
+To observe a WSL distro or an SSH host, just open a workspace there — the app
+puts the observer on that machine itself. [docs/REMOTE.md](docs/REMOTE.md)
+covers how, and how to place it by hand if you would rather.
 
 ## Build from source
 

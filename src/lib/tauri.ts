@@ -5,7 +5,9 @@ import type {
   AppInfo,
   AppSettings,
   BranchList,
+  BrowseListing,
   ConnectionInfo,
+  ConnectionTarget,
   DirEntryNode,
   GitCapabilities,
   GitStatusSnapshot,
@@ -38,10 +40,15 @@ export function connection(): Promise<ConnectionInfo> {
 }
 
 /**
- * Back to observing this machine, in-process. There is no matching `connect`:
- * opening a location is what points the app at another machine, so connecting
- * on its own would only ever land somewhere with nothing to show.
+ * Point the app at another machine without opening anything yet — what the
+ * folder picker needs, since it has to browse that machine before a workspace
+ * on it can be chosen.
  */
+export function connect(target: ConnectionTarget): Promise<ConnectionInfo> {
+  return invoke<ConnectionInfo>("connect", { target });
+}
+
+/** Back to observing this machine, in-process. */
 export function disconnect(): Promise<ConnectionInfo> {
   return invoke<ConnectionInfo>("disconnect");
 }
@@ -122,6 +129,14 @@ export function recentWorkspaces(): Promise<string[]> {
 
 export function watcherStatus(): Promise<WatcherStatus> {
   return invoke<WatcherStatus>("watcher_status");
+}
+
+/**
+ * Directories on the connected machine, for choosing a workspace on it.
+ * `null` starts at that machine's home directory. Needs no workspace open.
+ */
+export function browseDir(path: string | null): Promise<BrowseListing> {
+  return invoke<BrowseListing>("browse_dir", { path });
 }
 
 /** Every non-ignored file in the workspace, for the `Ctrl+P` jump. */

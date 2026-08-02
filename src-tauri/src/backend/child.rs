@@ -47,6 +47,11 @@ const RECONNECT_BACKOFF: [u64; 6] = [1, 2, 4, 8, 16, 30];
 /// keeping a few covers the rest.
 const STDERR_KEPT: usize = 20;
 
+/// How long a failed handshake waits for the remote's stderr to finish.
+/// The process is already dead by then, so this is a formality that costs
+/// milliseconds — but skipping it loses the one line that explains why.
+const STDERR_DRAIN: Duration = Duration::from_secs(2);
+
 /// A daemon spawned as a child process, and the reconnect logic around it.
 pub struct ChildProcess {
     shared: Arc<Shared>,
@@ -71,6 +76,9 @@ struct Shared {
     /// and no watch, so without this a reconnect silently becomes a blank app.
     replay: Mutex<Replay>,
     stderr: Mutex<Vec<String>>,
+    /// Set when the stderr pipe reaches EOF, which happens when the remote
+    /// process ends. Read by `await_stderr`.
+    stderr_done: AtomicBool,
     /// Set by `shutdown`, so the reader thread's EOF reads as "we asked for
     /// this" rather than as a crash worth reconnecting to.
     stopping: AtomicBool,
@@ -88,24 +96,82 @@ struct Replay {
     workspace_settings: Option<WorkspaceSettings>,
 }
 
+/// This app's version, which is also the version of daemon it installs.
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 impl ChildProcess {
-    /// Spawn a daemon for `target` and complete the handshake.
+    /// Spawn a daemon for `target` and complete the handshake, installing one
+    /// first if the remote hasn't got it.
     ///
-    /// Failures here are reported to the caller rather than retried: a daemon
-    /// that isn't installed, or one speaking a different protocol, is not
-    /// going to fix itself, and the user needs to be told which it was.
+    /// The install is the difference between "download this binary, put it
+    /// somewhere on the non-interactive PATH, and if that fails set this
+    /// settings field" and connecting to a machine that has never heard of
+    /// AgentLens. Everything needed to do it comes back from the failed
+    /// attempt: the bootstrap reports the remote's OS and architecture on its
+    /// way out, so there is nothing left to ask the user.
+    ///
+    /// Anything that is *not* a missing daemon — a refused login, an unknown
+    /// host, a protocol mismatch — is reported as itself. Installing on top of
+    /// those would be answering a question nobody asked.
     pub fn connect(
         target: ConnectionTarget,
         daemon: String,
+        auto_install: bool,
         emitter: Arc<dyn EventEmitter>,
     ) -> CommandResult<Self> {
-        let spec = remote::spawn_spec(&target, &daemon).ok_or_else(|| {
+        let spec = remote::spawn_spec(&target, &daemon, VERSION).ok_or_else(|| {
             format!(
                 "{} cannot be reached: a name starting with `-` would be read as an option \
                  by the program that connects to it.",
                 target.label()
             )
         })?;
+
+        let first = match Self::spawn(target.clone(), spec.clone(), Arc::clone(&emitter)) {
+            Ok(backend) => return Ok(backend),
+            Err(err) => err,
+        };
+
+        let Some(platform) = remote::parse_not_installed(&first) else {
+            return Err(first);
+        };
+        if !auto_install {
+            return Err(format!(
+                "AgentLens is not installed on {}, and automatic installation is turned off \
+                 in Settings.\n\nSee docs/REMOTE.md to install it by hand.",
+                target.label()
+            ));
+        }
+        let Some(asset) = platform.asset() else {
+            return Err(format!(
+                "{} runs {}, which AgentLens does not publish a daemon for. Build \
+                 `agentlens-daemon` there and name it in Settings → Remote → Daemon command.",
+                target.label(),
+                platform.describe()
+            ));
+        };
+
+        emit_status(
+            &emitter,
+            &target,
+            ConnectionState::Installing,
+            Some(format!(
+                "installing the AgentLens daemon on {}",
+                target.label()
+            )),
+        );
+        let installed = remote::provision(&target, VERSION, asset).map_err(|err| {
+            format!(
+                "Could not install the AgentLens daemon on {}.\n{err}\n\nInstall it by hand \
+                 (see docs/REMOTE.md) and name it in Settings → Remote → Daemon command.",
+                target.label()
+            )
+        })?;
+        eprintln!("agentlens: installed on {} — {installed}", target.label());
+
+        // One retry only. If a daemon we just wrote still cannot be started,
+        // installing it again will not help and the second error is the honest
+        // one to show.
         Self::spawn(target, spec, emitter)
     }
 
@@ -138,6 +204,7 @@ impl ChildProcess {
             next_id: AtomicU64::new(1),
             replay: Mutex::new(Replay::default()),
             stderr: Mutex::new(Vec::new()),
+            stderr_done: AtomicBool::new(false),
             stopping: AtomicBool::new(false),
             generation: AtomicU64::new(0),
         });
@@ -157,6 +224,32 @@ impl ChildProcess {
                 Err(err)
             }
         }
+    }
+}
+
+/// Push a connection state for a target that has no live backend yet.
+///
+/// The installing step happens between two `ChildProcess` instances — the one
+/// that failed is gone, the one that will work does not exist — so it has
+/// nowhere else to report from, and a silent 30-second pause during a first
+/// connection is exactly when the user most needs to be told what is going on.
+fn emit_status(
+    emitter: &Arc<dyn EventEmitter>,
+    target: &ConnectionTarget,
+    state: ConnectionState,
+    message: Option<String>,
+) {
+    let info = ConnectionInfo {
+        label: target.label(),
+        remote: target.is_remote(),
+        target: target.clone(),
+        since: agentlens_core::workspace::now_millis(),
+        daemon_version: None,
+        state,
+        message,
+    };
+    if let Ok(payload) = serde_json::to_value(&info) {
+        emitter.emit(EVENT_CONNECTION, &payload);
     }
 }
 
@@ -234,6 +327,7 @@ impl Shared {
 
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         self.stderr.lock().map(|mut kept| kept.clear()).ok();
+        self.stderr_done.store(false, Ordering::SeqCst);
         {
             let mut guard = self.child.lock().map_err(|_| "connection state poisoned")?;
             *guard = Some(child);
@@ -272,26 +366,38 @@ impl Shared {
         Ok(hello)
     }
 
-    /// Turn a dead-on-arrival connection into something actionable. The
-    /// daemon not being installed is by far the likeliest cause, and it
-    /// announces itself on stderr.
+    /// Turn a dead-on-arrival connection into something actionable.
+    ///
+    /// What the remote said on stderr is the whole diagnosis — usually the
+    /// bootstrap's `not-installed` marker, which is what decides whether the
+    /// app can fix this itself. So this waits for that stream to finish first:
+    /// the handshake fails when *stdout* closes, and nothing orders that
+    /// against stderr having been read. Without the wait, auto-install would
+    /// work most of the time, which is worse than not working.
     fn explain_handshake_failure(&self, err: &str) -> String {
+        self.await_stderr(STDERR_DRAIN);
         let tail = self
             .stderr
             .lock()
             .map(|kept| kept.join("\n"))
             .unwrap_or_default();
         let hint = format!(
-            "Could not reach agentlens-daemon on {}: {err}\n\
-             Install it there, then set the daemon command in Settings if it is not on \
-             the non-interactive PATH (an absolute path such as ~/.local/bin/agentlens-daemon \
-             is the usual fix).",
+            "Could not reach agentlens-daemon on {}: {err}",
             self.label()
         );
         if tail.is_empty() {
             hint
         } else {
             format!("{hint}\n\nThe remote said:\n{tail}")
+        }
+    }
+
+    /// Wait for the stderr reader to reach the end of its pipe. Bounded: a
+    /// daemon that is alive and simply quiet would otherwise never finish it.
+    fn await_stderr(&self, within: Duration) {
+        let deadline = std::time::Instant::now() + within;
+        while !self.stderr_done.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
         }
     }
 
@@ -390,6 +496,7 @@ impl Shared {
                 kept.push(line);
             }
         }
+        self.stderr_done.store(true, Ordering::SeqCst);
     }
 
     /// The connection ended. Fail everything in flight, then try to get it
@@ -566,7 +673,7 @@ mod tests {
 
     fn shared() -> Arc<Shared> {
         let target = ConnectionTarget::Ssh { host: "box".into() };
-        let (program, args) = remote::spawn_spec(&target, "agentlens-daemon").unwrap();
+        let (program, args) = remote::spawn_spec(&target, "agentlens-daemon", VERSION).unwrap();
         Arc::new(Shared {
             program,
             args,
@@ -583,6 +690,7 @@ mod tests {
             next_id: AtomicU64::new(1),
             replay: Mutex::new(Replay::default()),
             stderr: Mutex::new(Vec::new()),
+            stderr_done: AtomicBool::new(false),
             stopping: AtomicBool::new(false),
             generation: AtomicU64::new(0),
         })
@@ -789,6 +897,9 @@ mod tests {
                 distro: distro.clone(),
             },
             daemon,
+            // The distro has one installed already; this asserts the bootstrap
+            // *finds* it rather than that provisioning papers over a miss.
+            false,
             events.clone(),
         )
         .expect("the daemon inside the distro must answer the handshake");

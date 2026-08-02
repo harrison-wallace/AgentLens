@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
+import FolderBrowser from "./FolderBrowser";
 import { getAppInfo } from "../lib/tauri";
+import { useBrowseStore } from "../stores/browseStore";
 import { useConnectionStore } from "../stores/connectionStore";
 import { useWorkspaceStore } from "../stores/workspaceStore";
+import type { ConnectionTarget } from "../lib/protocol";
 
 /** Which remote form is showing, if any. */
 type RemoteMode = "wsl" | "ssh" | null;
@@ -12,6 +15,8 @@ export default function EmptyState() {
   const error = useWorkspaceStore((s) => s.error);
   const openViaDialog = useWorkspaceStore((s) => s.openViaDialog);
   const open = useWorkspaceStore((s) => s.open);
+  const connection = useConnectionStore((s) => s.info);
+  const startBrowse = useBrowseStore((s) => s.start);
 
   useEffect(() => {
     getAppInfo()
@@ -22,6 +27,12 @@ export default function EmptyState() {
       });
   }, []);
 
+  // While connected elsewhere, the OS file dialog would be picking folders on
+  // the wrong machine — and opening one would silently drop the connection,
+  // since a bare path means "here".
+  const openFolder = () =>
+    connection.remote ? void startBrowse(connection.target) : void openViaDialog();
+
   return (
     <div className="flex h-full w-full items-center justify-center overflow-y-auto bg-surface py-10">
       <div className="flex w-80 flex-col items-center text-center">
@@ -30,10 +41,10 @@ export default function EmptyState() {
 
         <button
           type="button"
-          onClick={() => void openViaDialog()}
+          onClick={openFolder}
           className="mt-6 rounded border border-accent px-4 py-2 text-sm font-medium text-accent hover:bg-hover"
         >
-          Open folder
+          {connection.remote ? `Open folder on ${connection.label}` : "Open folder"}
         </button>
 
         {error && <p className="mt-3 text-xs text-danger">{error}</p>}
@@ -67,11 +78,11 @@ export default function EmptyState() {
 /**
  * Opening a workspace that lives on another machine.
  *
- * There is no remote folder browser and there deliberately isn't one yet: the
- * app would need a whole second tree UI to pick a directory it can already be
- * told about in one line. So the location is typed, and — because it is
- * recorded as `wsl://distro/path` — the recents list above reopens it without
- * any of this a second time.
+ * Name the machine and either type the path or browse for it — there is no OS
+ * file dialog for a WSL distro or an SSH host, so browsing is the backend
+ * listing its own directories a level at a time. Whichever route, the result
+ * is recorded as `wsl://distro/path`, so the recents list above reopens it
+ * without any of this a second time.
  */
 function RemoteOpen() {
   const [mode, setMode] = useState<RemoteMode>(null);
@@ -110,6 +121,8 @@ function RemoteOpen() {
       {mode === "wsl" && <RemoteForm kind="wsl" distros={distros} />}
       {mode === "ssh" && <RemoteForm kind="ssh" distros={distros} />}
 
+      <FolderBrowser />
+
       {info.remote && (
         <p className="mt-3 text-center text-xs text-text-muted">
           Connected to {info.label} ·{" "}
@@ -131,14 +144,25 @@ function RemoteForm({ kind, distros }: { kind: "wsl" | "ssh"; distros: string[] 
   const [path, setPath] = useState("");
   const open = useWorkspaceStore((s) => s.open);
   const opening = useWorkspaceStore((s) => s.opening);
+  // Setting up a machine that has never run AgentLens takes long enough that
+  // "Connecting…" would look stuck, so it gets said out loud.
+  const installing = useConnectionStore((s) => s.info.state === "installing");
 
-  // A WSL path has to be given: `wsl.exe` with no directory starts in whatever
-  // Windows directory the app happens to be in, which is never what was meant.
-  // SSH without one is the login directory, which is.
-  const ready = host.trim().length > 0 && (kind === "ssh" || path.trim().length > 0);
+  const startBrowse = useBrowseStore((s) => s.start);
+
+  const named = host.trim().length > 0;
+  // A WSL path has to be given to open *directly*: `wsl.exe` with no directory
+  // starts in whatever Windows directory the app happens to be in, which is
+  // never what was meant. SSH without one is the login directory, which is.
+  // Browsing sidesteps the question entirely by starting at the home
+  // directory and showing what is actually there.
+  const canOpen = named && (kind === "ssh" || path.trim().length > 0);
+
+  const target = (): ConnectionTarget =>
+    kind === "wsl" ? { kind: "wsl", distro: host.trim() } : { kind: "ssh", host: host.trim() };
 
   const submit = () => {
-    if (!ready) return;
+    if (!canOpen) return;
     const suffix = path.trim() ? `/${path.trim().replace(/^\/+/, "")}` : "";
     void open(`${kind}://${host.trim()}${suffix}`);
   };
@@ -184,7 +208,7 @@ function RemoteForm({ kind, distros }: { kind: "wsl" | "ssh"; distros: string[] 
       )}
 
       <label className="text-xs text-text-muted">
-        Path
+        Path <span className="text-[11px]">(optional — or browse for it)</span>
         <input
           value={path}
           onChange={(event) => setPath(event.target.value)}
@@ -194,12 +218,24 @@ function RemoteForm({ kind, distros }: { kind: "wsl" | "ssh"; distros: string[] 
         />
       </label>
 
+      {/* Browsing needs only a machine to connect to, so it is offered as
+          soon as one is named — knowing the path is the thing it exists to
+          make unnecessary. */}
+      <button
+        type="button"
+        onClick={() => void startBrowse(target())}
+        disabled={!named || opening}
+        className="rounded border border-border px-3 py-1 text-xs font-medium text-text-muted hover:bg-hover hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        Browse…
+      </button>
+
       <button
         type="submit"
-        disabled={!ready || opening}
+        disabled={!canOpen || opening}
         className="mt-1 rounded border border-accent px-3 py-1 text-xs font-medium text-accent hover:bg-hover disabled:cursor-not-allowed disabled:opacity-40"
       >
-        {opening ? "Connecting…" : "Open"}
+        {installing ? "Setting up…" : opening ? "Connecting…" : "Open"}
       </button>
     </form>
   );

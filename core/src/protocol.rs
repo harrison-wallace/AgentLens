@@ -94,6 +94,36 @@ pub struct PinnedEntry {
     pub exists: bool,
 }
 
+/// One directory offered by the folder picker.
+///
+/// Absolute, unlike everything else in this file, because it is chosen
+/// *before* there is a workspace for a path to be relative to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowseEntry {
+    pub name: String,
+    /// Absolute path on the backend's machine, forward slashes.
+    pub path: String,
+    /// This directory is a git repository. Not a filter — plenty of useful
+    /// workspaces aren't repositories — but it is the single most useful thing
+    /// to know when picking one out of a list of twenty.
+    pub is_repository: bool,
+}
+
+/// One directory's worth of the folder picker.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowseListing {
+    /// Absolute path of the directory that was listed.
+    pub path: String,
+    /// `None` at the filesystem root, which is where "go up" stops.
+    pub parent: Option<String>,
+    pub entries: Vec<BrowseEntry>,
+    /// The directory held more than the listing cap. Shown rather than hidden,
+    /// so a picker that seems to be missing something says why.
+    pub truncated: bool,
+}
+
 /// How git sees one file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -284,7 +314,18 @@ pub struct AppSettings {
     /// command runs without a login shell, so `~/.local/bin` typically is not
     /// on it. An absolute path here is the fix, and it is a setting rather
     /// than a guess because only the user knows where they put it.
+    ///
+    /// Leaving this at the default is what enables the find-or-install
+    /// bootstrap; naming a command here is an instruction to run exactly that.
     pub daemon_command: String,
+    /// Install the daemon on a remote that hasn't got one, instead of failing
+    /// with instructions.
+    ///
+    /// On by default, because the alternative is asking someone to hand-place
+    /// a binary before the app will talk to a machine — and because the app
+    /// already has permission to run commands there, which is strictly more
+    /// than writing one file into the user's own home directory.
+    pub auto_install_daemon: bool,
 }
 
 impl Default for AppSettings {
@@ -293,6 +334,7 @@ impl Default for AppSettings {
             show_agent_context: true,
             agent_roots: Vec::new(),
             daemon_command: "agentlens-daemon".to_string(),
+            auto_install_daemon: true,
         }
     }
 }
@@ -398,7 +440,15 @@ pub struct AgentPoll {
 #[serde(tag = "cmd", rename_all = "camelCase")]
 pub enum Command {
     /// Handshake. First command on any connection; see [`Hello`].
+    ///
+    /// `rename_all` on an enum renames its *variants*, not their fields, so
+    /// this one goes over the wire as `protocol_version` while every other
+    /// protocol type is camelCase. Unifying that would break every daemon
+    /// already installed, for no user-visible gain — so the spelling stays,
+    /// and the alias makes accepting the tidier one a non-breaking change
+    /// whenever a protocol bump happens for a better reason.
     Hello {
+        #[serde(alias = "protocolVersion")]
         protocol_version: u32,
     },
     /// Liveness probe. Cheap, touches no state.
@@ -419,6 +469,12 @@ pub enum Command {
         path: String,
     },
     ListFiles,
+    /// Directories inside an *absolute* path on the backend's machine, for
+    /// choosing a workspace. `None` starts at the home directory. Needs no
+    /// workspace open — it is what happens before there is one.
+    BrowseDir {
+        path: Option<String>,
+    },
     PinnedEntries,
     ReadPreview {
         path: String,
@@ -542,6 +598,9 @@ impl ConnectionTarget {
 #[serde(rename_all = "camelCase")]
 pub enum ConnectionState {
     Connecting,
+    /// Putting a daemon on a remote that hasn't got one. Its own state because
+    /// it is the one step that takes long enough to look like a hang.
+    Installing,
     Connected,
     /// The daemon died or the transport failed. A reconnect is in flight.
     Disconnected,

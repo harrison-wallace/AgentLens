@@ -254,6 +254,36 @@ fn errors_come_back_as_errors_rather_than_closing_the_stream() {
 }
 
 #[test]
+fn a_request_still_being_answered_survives_stdin_closing() {
+    // Requests are handled off-thread, so EOF on stdin does not mean the work
+    // is done. Exiting between reading a command and writing its answer looks
+    // to the app exactly like a hang, and it only shows up when the two race —
+    // which is every time a connection closes just after a command.
+    let mut daemon = Daemon::start();
+    let id = daemon.next_id;
+    daemon.next_id += 1;
+    daemon.write(&Frame::Request {
+        id,
+        command: Cmd::Hello {
+            protocol_version: PROTOCOL_VERSION,
+        },
+    });
+    daemon.close_stdin();
+
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        match daemon.next_frame(deadline) {
+            Frame::Response { id: got, error, .. } => {
+                assert_eq!(got, id, "the answer must arrive despite the shutdown");
+                assert!(error.is_none());
+                return;
+            }
+            _ => continue,
+        }
+    }
+}
+
+#[test]
 fn closing_stdin_shuts_the_daemon_down() {
     let dir = tempfile::tempdir().unwrap();
     let mut daemon = Daemon::start();
