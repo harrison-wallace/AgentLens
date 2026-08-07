@@ -20,6 +20,14 @@ use serde_json::Value;
 /// an `Option` where a future version might not send it, for the same reason.
 pub const PROTOCOL_VERSION: u32 = 1;
 
+/// Feature names this backend reports in [`Hello::capabilities`].
+///
+/// A newer app asks an older daemon what it supports by reading this list,
+/// rather than guessing from the package version. Entries are only ever
+/// **added** — removing one is a breaking change that belongs to
+/// [`PROTOCOL_VERSION`], not to a quieter shrink of this list.
+pub const CAPABILITIES: &[&str] = &["agents", "correlation", "gitops", "preview", "snapshots"];
+
 /// Identity of the running application, surfaced in the window title and UI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -41,8 +49,11 @@ pub struct Hello {
     /// The backend's package version — not necessarily the UI's.
     pub version: String,
     pub protocol_version: u32,
-    /// Optional features this backend has. Empty is a valid answer; the UI
-    /// must not require anything here to function.
+    /// Optional features this backend has. Empty is a valid answer — it means
+    /// "unknown, assume nothing" (an older daemon that never sent the field,
+    /// or a backend that has not filled it in). The UI must not require
+    /// anything here to function; entries only ever grow, see [`CAPABILITIES`].
+    #[serde(default)]
     pub capabilities: Vec<String>,
 }
 
@@ -201,6 +212,33 @@ pub struct FsEvent {
     pub is_dir: bool,
     /// Unix epoch milliseconds.
     pub at: i64,
+}
+
+/// An [`FsEvent`] joined to the agent tool call that most likely caused it.
+///
+/// `attribution` is `None` when nothing claimed the change — the user's own
+/// editor, or a write the correlation window could not safely tie to a call.
+/// Prefer under-claiming: a wrong badge is worse than a missing one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttributedEvent {
+    pub event: FsEvent,
+    /// `None` when nothing claimed it — an external edit.
+    pub attribution: Option<Attribution>,
+}
+
+/// Which agent tool call is believed to have caused a filesystem change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Attribution {
+    pub session_id: String,
+    pub agent: AgentKind,
+    pub tool: String,
+    /// The agent's one-line intent, when the provider supplied one.
+    pub summary: Option<String>,
+    /// True when claimed by a shell command rather than an explicit path —
+    /// lower confidence, and the UI says so.
+    pub via_command: bool,
 }
 
 /// Lifecycle state of the filesystem watcher for the open workspace.
@@ -705,6 +743,16 @@ pub struct ConnectionInfo {
     pub message: Option<String>,
     /// From the handshake, once it has happened.
     pub daemon_version: Option<String>,
+    /// Feature names the daemon reported in its [`Hello`]. Empty when no
+    /// daemon is involved (local), when the daemon is older than capabilities,
+    /// or when it sent an empty list — all three mean "unknown, assume nothing".
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    /// True when a remote daemon's package version differs from this app's.
+    /// The connection still works; the UI surfaces the fact so the user can
+    /// reinstall. Always false for local, and false when the versions match.
+    #[serde(default)]
+    pub daemon_stale: bool,
     /// Unix epoch milliseconds of the last state change. The feed uses this
     /// to place a gap marker over the window it missed.
     pub since: i64,
@@ -719,6 +767,8 @@ impl Default for ConnectionInfo {
             remote: false,
             message: None,
             daemon_version: None,
+            capabilities: Vec::new(),
+            daemon_stale: false,
             since: 0,
         }
     }
@@ -730,6 +780,14 @@ impl Default for ConnectionInfo {
 pub const EVENT_FS_CHANGES: &str = "fs-changes";
 pub const EVENT_GIT_STATUS: &str = "git-status";
 pub const EVENT_WATCHER_STATUS: &str = "watcher-status";
+/// Filesystem changes joined to the agent tool call that caused them, when
+/// correlation could make the link. Emitted alongside [`EVENT_FS_CHANGES`] so
+/// a feed that already rendered the raw event can upgrade the row in place.
+pub const EVENT_ATTRIBUTED: &str = "attributed-changes";
+/// Normalized agent activity for the open workspace (tool calls, session
+/// lifecycle, activity transitions). Pushed by the background poller so the
+/// UI does not have to drive polling itself.
+pub const EVENT_AGENT_EVENTS: &str = "agent-events";
 /// Connection lifecycle. Only ever non-trivial for a remote backend, but it
 /// is emitted for local too so the UI has one code path.
 pub const EVENT_CONNECTION: &str = "connection";
@@ -889,6 +947,27 @@ mod tests {
         .unwrap();
         assert_eq!(hello.protocol_version, 2);
         assert!(hello.capabilities.is_empty());
+    }
+
+    #[test]
+    fn a_hello_with_no_capabilities_field_deserializes_to_an_empty_list() {
+        // Older daemons never sent the field. Empty means "unknown, assume
+        // nothing" — not "this backend can do nothing" — so features must not
+        // start requiring a capability just because the list can be empty.
+        let hello: Hello = serde_json::from_str(
+            r#"{"name":"agentlens-core","version":"0.3.1","protocolVersion":1}"#,
+        )
+        .unwrap();
+        assert!(hello.capabilities.is_empty());
+    }
+
+    #[test]
+    fn capabilities_lists_exactly_the_entries_in_order() {
+        // Entries are only ever added; removing one is a protocol break.
+        assert_eq!(
+            CAPABILITIES,
+            &["agents", "correlation", "gitops", "preview", "snapshots"]
+        );
     }
 
     #[test]

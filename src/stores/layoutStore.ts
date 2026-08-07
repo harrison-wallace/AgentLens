@@ -17,6 +17,8 @@ export interface LayoutState {
   treeCollapsed: boolean;
   feedCollapsed: boolean;
   previewCollapsed: boolean;
+  /** Collapsed state of the agent session list above the feed. */
+  sessionsCollapsed: boolean;
 }
 
 const DEFAULTS: LayoutState = {
@@ -25,6 +27,7 @@ const DEFAULTS: LayoutState = {
   treeCollapsed: false,
   feedCollapsed: false,
   previewCollapsed: false,
+  sessionsCollapsed: false,
 };
 
 export function clampWidth(width: number): number {
@@ -43,6 +46,7 @@ function load(): LayoutState {
       treeCollapsed: parsed.treeCollapsed ?? false,
       feedCollapsed: parsed.feedCollapsed ?? false,
       previewCollapsed: parsed.previewCollapsed ?? false,
+      sessionsCollapsed: parsed.sessionsCollapsed ?? false,
     };
   } catch {
     // Corrupt or unavailable storage must not stop the app rendering.
@@ -82,6 +86,7 @@ interface LayoutStore extends LayoutState {
   toggleTree: () => void;
   toggleFeed: () => void;
   togglePreview: () => void;
+  toggleSessions: () => void;
 }
 
 export const useLayoutStore = create<LayoutStore>((set, get) => {
@@ -90,8 +95,22 @@ export const useLayoutStore = create<LayoutStore>((set, get) => {
     // Collapsing the last visible panel would leave an empty window with no
     // hint of how to recover, so the final one stays put.
     if (visiblePanels(next) === 0) return;
-    const { treeWidth, feedWidth, treeCollapsed, feedCollapsed, previewCollapsed } = next;
-    persist({ treeWidth, feedWidth, treeCollapsed, feedCollapsed, previewCollapsed });
+    const {
+      treeWidth,
+      feedWidth,
+      treeCollapsed,
+      feedCollapsed,
+      previewCollapsed,
+      sessionsCollapsed,
+    } = next;
+    persist({
+      treeWidth,
+      feedWidth,
+      treeCollapsed,
+      feedCollapsed,
+      previewCollapsed,
+      sessionsCollapsed,
+    });
     set(patch);
   };
 
@@ -102,5 +121,6 @@ export const useLayoutStore = create<LayoutStore>((set, get) => {
     toggleTree: () => commit({ treeCollapsed: !get().treeCollapsed }),
     toggleFeed: () => commit({ feedCollapsed: !get().feedCollapsed }),
     togglePreview: () => commit({ previewCollapsed: !get().previewCollapsed }),
+    toggleSessions: () => commit({ sessionsCollapsed: !get().sessionsCollapsed }),
   };
 });

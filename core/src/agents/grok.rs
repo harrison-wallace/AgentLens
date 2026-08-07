@@ -8,9 +8,10 @@
 //!
 //! The cwd encoding is percent-encoding, so it is reversible — none of Claude
 //! Code's lossy-slug collision problem. `events.jsonl` carries tool *names*
-//! only, never arguments or file paths; path extraction from
-//! `chat_history.jsonl` is a later task, and this provider deliberately emits
-//! `ToolCall` events with an empty `paths` vec.
+//! only, never arguments or file paths. Paths come from a separate
+//! `chat_history.jsonl` beside it: that file holds prompts and edit bodies,
+//! so the only thing read out of it is path-bearing argument keys, and
+//! nothing else is retained.
 //!
 //! The format is not a stable API. Unknown event types are skipped, malformed
 //! lines are counted and ignored, and an unknown `schema_version` major stops
@@ -25,6 +26,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 
 use super::{is_within_workspace, read_tail, AgentProvider, ParseStats};
+use crate::paths::to_workspace_relative;
 use crate::protocol::{AgentActivity, AgentEvent, AgentKind, SessionRef};
 
 /// Cap on a single `poll`, so a chatty session can't produce an unbounded
@@ -44,6 +46,11 @@ const PERMISSION_PROMPT_DWELL_MS: i64 = 1000;
 /// Major `schema_version` this provider understands. Anything whose major
 /// does not match is skipped entirely for that session.
 const KNOWN_SCHEMA_MAJOR: &str = "1";
+
+/// Tool-argument keys that name a file. Mirrors Claude Code's set, plus
+/// Grok's `target_file` (`read_file`). `run_terminal_command` has none of
+/// these — a shell command is not a path, and parsing one would be a guess.
+const PATH_INPUT_KEYS: [&str; 3] = ["file_path", "target_file", "path"];
 
 #[derive(Default)]
 pub struct Grok {
@@ -66,6 +73,14 @@ pub struct Grok {
     /// `session_relationship` from the most recent `turn_started`, so tool
     /// events in the same turn can set `sidechain` correctly.
     relationship: HashMap<String, String>,
+    /// Paths extracted from `chat_history.jsonl`, keyed by
+    /// `(session_id, tool_call_id)`. Filled lazily on `tool_completed` and
+    /// never from `tool_started` (which has no id to join on).
+    ///
+    /// Values are already workspace-relative. An empty vec means "looked,
+    /// found nothing" — so a missing `chat_history` does not re-read forever,
+    /// and paths outside the workspace stay dropped rather than re-tried.
+    path_cache: HashMap<(String, String), Vec<String>>,
     pub stats: ParseStats,
 }
 
@@ -266,7 +281,6 @@ impl AgentProvider for Grok {
         session: &SessionRef,
         roots: &[PathBuf],
     ) -> Vec<AgentEvent> {
-        let _ = workspace;
         if self.unsupported.contains(&session.id) {
             return Vec::new();
         }
@@ -312,7 +326,7 @@ impl AgentProvider for Grok {
                 self.stats.records += 1;
                 match serde_json::from_str::<Value>(line) {
                     Ok(record) => {
-                        if let Some(batch) = self.events_from(&record, session) {
+                        if let Some(batch) = self.events_from(&record, session, workspace, roots) {
                             events.extend(batch);
                         } else if self.unsupported.contains(&session.id) {
                             // Unknown schema: drop everything for this
@@ -358,7 +372,13 @@ impl Grok {
 
     /// Convert one event record. Returns `None` when the session's schema is
     /// unsupported (caller must abandon the batch). Empty vec = skip quietly.
-    fn events_from(&mut self, record: &Value, session: &SessionRef) -> Option<Vec<AgentEvent>> {
+    fn events_from(
+        &mut self,
+        record: &Value,
+        session: &SessionRef,
+        workspace: &Path,
+        roots: &[PathBuf],
+    ) -> Option<Vec<AgentEvent>> {
         let event_type = record.get("type").and_then(Value::as_str).unwrap_or("");
         let at = ts_of(record);
         let session_id = session.id.clone();
@@ -393,13 +413,23 @@ impl Grok {
                     .relationship
                     .get(&session.id)
                     .is_some_and(|r| r != "primary");
+                // `tool_started` has no `tool_call_id`, so it cannot join to
+                // chat_history. Only `tool_completed` can carry paths.
+                let paths = if event_type == "tool_completed" {
+                    record
+                        .get("tool_call_id")
+                        .and_then(Value::as_str)
+                        .map(|id| self.paths_for(session, id, workspace, roots))
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
                 out.push(AgentEvent::ToolCall {
                     session_id: session_id.clone(),
                     at,
                     tool,
                     summary: None,
-                    // events.jsonl has no paths — chat_history is a later task.
-                    paths: Vec::new(),
+                    paths,
                     sidechain,
                 });
             }
@@ -489,6 +519,97 @@ impl Grok {
             .into_iter()
             .collect()
     }
+
+    /// Workspace-relative paths for a `tool_call_id`, filled from
+    /// `chat_history.jsonl` on first sight. Missing or unreadable history is
+    /// empty paths, never an error — the app must look like phase 1 when the
+    /// richer file is absent.
+    fn paths_for(
+        &mut self,
+        session: &SessionRef,
+        tool_call_id: &str,
+        workspace: &Path,
+        roots: &[PathBuf],
+    ) -> Vec<String> {
+        let key = (session.id.clone(), tool_call_id.to_string());
+        if let Some(paths) = self.path_cache.get(&key) {
+            return paths.clone();
+        }
+        self.refresh_path_cache(session, workspace, roots);
+        // A full scan that still found nothing for this id is a permanent
+        // miss for this workspace open: insert empty so the next poll does
+        // not re-read the tail for every tool without arguments.
+        self.path_cache.entry(key).or_default().clone()
+    }
+
+    /// Re-scan the session's `chat_history.jsonl` tail and fold every
+    /// `tool_calls[].id` → paths into the cache. Only paths are kept; the
+    /// rest of each record (prompts, edit bodies) is discarded as soon as
+    /// the line is parsed.
+    fn refresh_path_cache(&mut self, session: &SessionRef, workspace: &Path, roots: &[PathBuf]) {
+        let Some(events_path) = self.events_path(session, roots) else {
+            return;
+        };
+        let Some(session_dir) = events_path.parent() else {
+            return;
+        };
+        let chat_path = session_dir.join("chat_history.jsonl");
+        let Some(text) = read_tail(&chat_path) else {
+            return;
+        };
+        for line in text.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let Ok(record) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            if record.get("type").and_then(Value::as_str) != Some("assistant") {
+                continue;
+            }
+            let Some(calls) = record.get("tool_calls").and_then(Value::as_array) else {
+                continue;
+            };
+            for call in calls {
+                let Some(id) = call.get("id").and_then(Value::as_str) else {
+                    continue;
+                };
+                let paths = call
+                    .get("arguments")
+                    .map(|args| paths_from_arguments(args, workspace))
+                    .unwrap_or_default();
+                self.path_cache
+                    .insert((session.id.clone(), id.to_string()), paths);
+            }
+        }
+    }
+}
+
+/// Path-like tool arguments, converted to workspace-relative. Outside the
+/// workspace is dropped: the protocol only carries relative paths, and a
+/// file the agent touched elsewhere has nothing in the tree to attribute to.
+///
+/// `arguments` is either a JSON object or a JSON *string that needs a second
+/// parse* — both shapes appear in the wild, so both are accepted.
+fn paths_from_arguments(arguments: &Value, workspace: &Path) -> Vec<String> {
+    let parsed;
+    let object = match arguments {
+        Value::Object(_) => arguments,
+        Value::String(raw) => match serde_json::from_str::<Value>(raw) {
+            Ok(value) => {
+                parsed = value;
+                &parsed
+            }
+            Err(_) => return Vec::new(),
+        },
+        _ => return Vec::new(),
+    };
+    PATH_INPUT_KEYS
+        .iter()
+        .filter_map(|key| object.get(*key).and_then(Value::as_str))
+        .filter_map(|raw| to_workspace_relative(workspace, Path::new(raw)))
+        .filter(|relative| !relative.is_empty())
+        .collect()
 }
 
 /// Best-effort last-activity time from the events file: prefer the last
@@ -793,6 +914,7 @@ mod tests {
         assert!(events
             .iter()
             .any(|e| matches!(e, AgentEvent::SessionStarted { .. })));
+        // No chat_history beside the fixture → empty paths, never an error.
         assert!(events.iter().any(|e| matches!(
             e,
             AgentEvent::ToolCall { tool, paths, .. }
@@ -808,5 +930,181 @@ mod tests {
         assert!(events
             .iter()
             .any(|e| matches!(e, AgentEvent::SessionEnded { .. })));
+    }
+
+    // -- chat_history path extraction ---------------------------------------
+
+    /// Write a synthetic `chat_history.jsonl` next to the events file. Paths
+    /// and prompts are invented — never real session content.
+    fn write_chat_history(events_file: &Path, body: &str) {
+        let chat = events_file
+            .parent()
+            .expect("events live in a session dir")
+            .join("chat_history.jsonl");
+        std::fs::write(chat, body).unwrap();
+    }
+
+    fn tool_completed_line(tool: &str, id: &str, ts: i64) -> String {
+        format!(
+            r#"{{"type":"tool_completed","ts":{ts},"tool_name":"{tool}","tool_call_id":"{id}","duration_ms":10,"outcome":"success"}}"#
+        )
+    }
+
+    #[test]
+    fn tool_completed_joins_search_replace_file_path_from_chat_history() {
+        let id = "sess-paths-sr";
+        let (_dir, roots, file) = session_tree("", id, "/home/dev/project");
+        // arguments as a JSON object (already parsed shape).
+        write_chat_history(
+            &file,
+            concat!(
+                r#"{"type":"assistant","tool_calls":[{"id":"tc-sr","name":"search_replace","#,
+                r#""arguments":{"file_path":"/home/dev/project/src/main.rs","#,
+                r#""old_string":"a","new_string":"b"}}]}"#,
+                "\n",
+            ),
+        );
+        let mut provider = Grok::new();
+        provider.poll(workspace(), &session(id), &roots);
+        std::fs::write(
+            &file,
+            format!(
+                "{}\n",
+                tool_completed_line("search_replace", "tc-sr", 1_786_121_838_000)
+            ),
+        )
+        .unwrap();
+        let events = provider.poll(workspace(), &session(id), &roots);
+        let paths = events.iter().find_map(|e| match e {
+            AgentEvent::ToolCall { tool, paths, .. } if tool == "search_replace" => {
+                Some(paths.clone())
+            }
+            _ => None,
+        });
+        assert_eq!(paths, Some(vec!["src/main.rs".to_string()]));
+    }
+
+    #[test]
+    fn target_file_and_path_argument_keys_are_extracted() {
+        let id = "sess-paths-keys";
+        let (_dir, roots, file) = session_tree("", id, "/home/dev/project");
+        write_chat_history(
+            &file,
+            concat!(
+                r#"{"type":"assistant","tool_calls":[{"id":"tc-read","name":"read_file","#,
+                r#""arguments":{"target_file":"/home/dev/project/lib/mod.rs"}},"#,
+                r#"{"id":"tc-grep","name":"grep","arguments":{"path":"/home/dev/project/src","#,
+                r#""pattern":"fn main"}}]}"#,
+                "\n",
+            ),
+        );
+        let mut provider = Grok::new();
+        provider.poll(workspace(), &session(id), &roots);
+        let body = format!(
+            "{}\n{}\n",
+            tool_completed_line("read_file", "tc-read", 1_786_121_838_000),
+            tool_completed_line("grep", "tc-grep", 1_786_121_838_100),
+        );
+        std::fs::write(&file, body).unwrap();
+        let events = provider.poll(workspace(), &session(id), &roots);
+
+        let read_paths = events.iter().find_map(|e| match e {
+            AgentEvent::ToolCall { tool, paths, .. } if tool == "read_file" => Some(paths.clone()),
+            _ => None,
+        });
+        let grep_paths = events.iter().find_map(|e| match e {
+            AgentEvent::ToolCall { tool, paths, .. } if tool == "grep" => Some(paths.clone()),
+            _ => None,
+        });
+        assert_eq!(read_paths, Some(vec!["lib/mod.rs".to_string()]));
+        assert_eq!(grep_paths, Some(vec!["src".to_string()]));
+    }
+
+    #[test]
+    fn path_outside_the_workspace_is_dropped() {
+        let id = "sess-paths-out";
+        let (_dir, roots, file) = session_tree("", id, "/home/dev/project");
+        write_chat_history(
+            &file,
+            concat!(
+                r#"{"type":"assistant","tool_calls":[{"id":"tc-out","name":"search_replace","#,
+                r#""arguments":{"file_path":"/home/dev/other/secret.rs","#,
+                r#""old_string":"x","new_string":"y"}}]}"#,
+                "\n",
+            ),
+        );
+        let mut provider = Grok::new();
+        provider.poll(workspace(), &session(id), &roots);
+        std::fs::write(
+            &file,
+            format!(
+                "{}\n",
+                tool_completed_line("search_replace", "tc-out", 1_786_121_838_000)
+            ),
+        )
+        .unwrap();
+        let events = provider.poll(workspace(), &session(id), &roots);
+        assert!(events.iter().any(|e| matches!(
+            e,
+            AgentEvent::ToolCall { paths, .. } if paths.is_empty()
+        )));
+    }
+
+    #[test]
+    fn arguments_given_as_a_json_string_parse_the_same_as_an_object() {
+        let id = "sess-paths-str";
+        let (_dir, roots, file) = session_tree("", id, "/home/dev/project");
+        // Double-encoded: arguments is a string containing JSON.
+        write_chat_history(
+            &file,
+            concat!(
+                r#"{"type":"assistant","tool_calls":[{"id":"tc-str","name":"search_replace","#,
+                r#""arguments":"{\"file_path\":\"/home/dev/project/src/main.rs\","#,
+                r#"\"old_string\":\"a\",\"new_string\":\"b\"}"}]}"#,
+                "\n",
+            ),
+        );
+        let mut provider = Grok::new();
+        provider.poll(workspace(), &session(id), &roots);
+        std::fs::write(
+            &file,
+            format!(
+                "{}\n",
+                tool_completed_line("search_replace", "tc-str", 1_786_121_838_000)
+            ),
+        )
+        .unwrap();
+        let events = provider.poll(workspace(), &session(id), &roots);
+        let paths = events.iter().find_map(|e| match e {
+            AgentEvent::ToolCall { paths, .. } => Some(paths.clone()),
+            _ => None,
+        });
+        assert_eq!(paths, Some(vec!["src/main.rs".to_string()]));
+    }
+
+    #[test]
+    fn missing_chat_history_yields_empty_paths_and_no_error() {
+        let id = "sess-paths-missing";
+        let (_dir, roots, file) = session_tree("", id, "/home/dev/project");
+        // Deliberately no chat_history.jsonl.
+        let mut provider = Grok::new();
+        provider.poll(workspace(), &session(id), &roots);
+        std::fs::write(
+            &file,
+            format!(
+                "{}\n",
+                tool_completed_line("search_replace", "tc-miss", 1_786_121_838_000)
+            ),
+        )
+        .unwrap();
+        let events = provider.poll(workspace(), &session(id), &roots);
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                AgentEvent::ToolCall { tool, paths, .. }
+                    if tool == "search_replace" && paths.is_empty()
+            )),
+            "missing history must not error: {events:?}"
+        );
     }
 }

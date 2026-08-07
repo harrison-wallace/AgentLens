@@ -194,6 +194,8 @@ impl ChildProcess {
                 target,
                 message: None,
                 daemon_version: None,
+                capabilities: Vec::new(),
+                daemon_stale: false,
             }),
             program,
             args,
@@ -245,6 +247,8 @@ fn emit_status(
         target: target.clone(),
         since: agentlens_core::workspace::now_millis(),
         daemon_version: None,
+        capabilities: Vec::new(),
+        daemon_stale: false,
         state,
         message,
     };
@@ -363,6 +367,12 @@ impl Shared {
                 env!("CARGO_PKG_VERSION"),
             ));
         }
+        // A package-version mismatch is *not* fatal here. Protocol agreement is
+        // what makes the connection usable; a daemon built from an older (or
+        // newer) release of the same protocol still answers. The fact is kept
+        // on `ConnectionInfo::daemon_stale` so the UI can say so — see
+        // `publish_connected`. Auto-reinstalling would surprise anyone who
+        // deliberately pinned a daemon, and blocking would hide a working link.
         Ok(hello)
     }
 
@@ -621,6 +631,12 @@ impl Shared {
     fn publish_connected(&self, hello: &Hello) {
         if let Ok(mut info) = self.info.lock() {
             info.daemon_version = Some(hello.version.clone());
+            info.capabilities = hello.capabilities.clone();
+            // Directory name / `--version` string are install-time hints; the
+            // handshake is the authority on what is actually running. A
+            // managed binary that was replaced under its versioned path, or a
+            // hand-installed one the bootstrap let through, both surface here.
+            info.daemon_stale = hello.version != env!("CARGO_PKG_VERSION");
         }
         self.publish(ConnectionState::Connected, None);
     }
@@ -824,6 +840,160 @@ mod tests {
 
         assert!(err.contains("agentlens-no-such-program"), "{err}");
         assert!(err.contains("PATH"), "{err}");
+    }
+
+    /// Is `python3` on `PATH`? The stub daemon below is a Python script, so a
+    /// Unix host without it should skip these rather than fail on a spawn
+    /// error that says nothing about what was being tested. CI always has it;
+    /// this is for the contributor who does not.
+    #[cfg(unix)]
+    fn python3_available() -> bool {
+        std::process::Command::new("python3")
+            .arg("--version")
+            .output()
+            .is_ok()
+    }
+
+    /// A stand-in that speaks just enough of the stdio protocol to answer
+    /// `Hello` and then sit quiet — enough to exercise the handshake path
+    /// without building the real daemon. Invoked as `python3 <script>` rather
+    /// than via a shebang: writing an executable and immediately `exec`ing it
+    /// races with the kernel's "text file busy" check under parallel tests.
+    #[cfg(unix)]
+    fn stub_stdio_daemon(at: &std::path::Path, version: &str, protocol: u32) {
+        std::fs::write(
+            at,
+            format!(
+                r#"import json, sys
+version = {version:?}
+protocol = {protocol}
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    if req.get("type") != "request":
+        continue
+    result = {{
+        "name": "agentlens-core",
+        "version": version,
+        "protocolVersion": protocol,
+        "capabilities": ["agents", "gitops", "preview", "snapshots"],
+    }}
+    print(json.dumps({{"type": "response", "id": req["id"], "result": result}}), flush=True)
+"#
+            ),
+        )
+        .unwrap();
+    }
+
+    /// `(program, args)` that runs the stub written by [`stub_stdio_daemon`].
+    #[cfg(unix)]
+    fn stub_spawn_spec(script: &std::path::Path) -> (String, Vec<String>) {
+        (
+            "python3".to_string(),
+            vec![script.to_string_lossy().into_owned()],
+        )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_daemon_reporting_the_app_version_is_not_marked_stale() {
+        if !python3_available() {
+            return;
+        }
+        // The handshake is the authority: matching package versions means the
+        // binary under a managed directory (or a hand install) is the one this
+        // app cut, so the UI has nothing to warn about.
+        let dir = tempfile::tempdir().unwrap();
+        let daemon = dir.path().join("daemon.py");
+        stub_stdio_daemon(&daemon, env!("CARGO_PKG_VERSION"), PROTOCOL_VERSION);
+
+        let backend = ChildProcess::spawn(
+            ConnectionTarget::Ssh { host: "box".into() },
+            stub_spawn_spec(&daemon),
+            Arc::new(Silent),
+        )
+        .expect("a matching daemon must complete the handshake");
+
+        let info = backend.info();
+        assert_eq!(info.state, ConnectionState::Connected);
+        assert_eq!(
+            info.daemon_version.as_deref(),
+            Some(env!("CARGO_PKG_VERSION"))
+        );
+        assert!(!info.daemon_stale, "matching versions must not look stale");
+        assert_eq!(
+            info.capabilities,
+            vec![
+                "agents".to_string(),
+                "gitops".to_string(),
+                "preview".to_string(),
+                "snapshots".to_string(),
+            ],
+        );
+        backend.shutdown();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_daemon_reporting_a_different_version_is_marked_stale() {
+        if !python3_available() {
+            return;
+        }
+        // Still a successful connection — package drift is visible, not fatal.
+        // A binary left under the managed directory for this app version but
+        // built from another release is the failure mode this flag catches.
+        let dir = tempfile::tempdir().unwrap();
+        let daemon = dir.path().join("daemon.py");
+        stub_stdio_daemon(&daemon, "0.0.1-stale", PROTOCOL_VERSION);
+
+        let backend = ChildProcess::spawn(
+            ConnectionTarget::Ssh { host: "box".into() },
+            stub_spawn_spec(&daemon),
+            Arc::new(Silent),
+        )
+        .expect("a version-mismatched daemon must still connect");
+
+        let info = backend.info();
+        assert_eq!(info.state, ConnectionState::Connected);
+        assert_eq!(info.daemon_version.as_deref(), Some("0.0.1-stale"));
+        assert!(
+            info.daemon_stale,
+            "a wrong package version must set daemon_stale so the UI can say so"
+        );
+        backend.shutdown();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_protocol_version_mismatch_still_fails_the_handshake() {
+        if !python3_available() {
+            return;
+        }
+        // Package-version drift is non-fatal; protocol drift is not. The two
+        // checks must stay separate — collapsing them would either soft-fail a
+        // genuinely unusable link or hard-fail a still-working older package.
+        let dir = tempfile::tempdir().unwrap();
+        let daemon = dir.path().join("daemon.py");
+        stub_stdio_daemon(&daemon, env!("CARGO_PKG_VERSION"), PROTOCOL_VERSION + 41);
+
+        let Err(err) = ChildProcess::spawn(
+            ConnectionTarget::Ssh { host: "box".into() },
+            stub_spawn_spec(&daemon),
+            Arc::new(Silent),
+        ) else {
+            panic!("a protocol mismatch must not connect");
+        };
+
+        assert!(
+            err.contains("speaks protocol"),
+            "the error must name the protocol mismatch, got: {err}"
+        );
+        assert!(
+            err.contains(&(PROTOCOL_VERSION + 41).to_string()),
+            "the error must name the daemon's protocol, got: {err}"
+        );
     }
 
     /// Records what the transport pushes at the front end.

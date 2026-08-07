@@ -45,6 +45,12 @@
   --color-diff-added: rgb(48 209 88 / 0.12);
   --color-diff-removed: rgb(255 59 48 / 0.12);
 
+  /* Agent activity — colour carries state; animation carries which agent */
+  --color-agent-working: #bf5af2;
+  --color-agent-blocked: #ff3b30;
+  --color-agent-idle: #6a6666;
+  --color-agent-stale: #4a4646;
+
   /* Typography */
   --font-mono:
     "JetBrains Mono", "Geist Mono", "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Monaco,
@@ -89,6 +95,11 @@
 
   --color-diff-added: rgb(30 142 62 / 0.12);
   --color-diff-removed: rgb(209 59 48 / 0.12);
+
+  --color-agent-working: #8a3ab0;
+  --color-agent-blocked: #d13b30;
+  --color-agent-idle: #8f8a8a;
+  --color-agent-stale: #b0aaaa;
 }
 
 /* Preview body text. A variable rather than a token because it is a user
@@ -118,7 +129,6 @@ body {
   font-weight: 400;
   line-height: 1.45;
   font-variant-numeric: tabular-nums;
-  -webkit-font-smoothing: antialiased;
 }
 
 /* Tree-row "recently changed" glow: a quick highlight that settles into a

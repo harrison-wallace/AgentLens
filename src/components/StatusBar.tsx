@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import BranchControl from "./BranchControl";
 import { DEFAULT_ZOOM, useAppearanceStore } from "../stores/appearanceStore";
 import { useConnectionStore } from "../stores/connectionStore";
@@ -5,6 +6,7 @@ import { useFeedStore } from "../stores/feedStore";
 import { useGitStore } from "../stores/gitStore";
 import { useWatcherStore } from "../stores/watcherStore";
 import { countsFor } from "../lib/treeRows";
+import { getAppInfo } from "../lib/tauri";
 import type { ConnectionState, WatcherState } from "../lib/protocol";
 
 // Exhaustive over `WatcherState` with no `default`, so adding a state is a
@@ -44,13 +46,40 @@ function connectionClass(state: ConnectionState): string {
  */
 function ConnectionChip() {
   const info = useConnectionStore((s) => s.info);
+  // Only fetched when a stale daemon is on screen — the tooltip names the app
+  // version the daemon was expected to match, and nothing else needs it.
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  useEffect(() => {
+    if (!info.remote || !info.daemonStale) return;
+    let cancelled = false;
+    getAppInfo()
+      .then((a) => {
+        if (!cancelled) setAppVersion(a.version);
+      })
+      .catch(() => {
+        // No backend (plain browser) — tooltip still says out of date, just
+        // without the expected version number.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [info.remote, info.daemonStale]);
+
   if (!info.remote) return null;
+
+  const daemonTitle = info.daemonVersion
+    ? info.daemonStale
+      ? appVersion
+        ? `daemon v${info.daemonVersion} (out of date — expected app v${appVersion})`
+        : `daemon v${info.daemonVersion} (out of date)`
+      : `daemon v${info.daemonVersion}`
+    : undefined;
 
   const suffix = info.state === "connected" ? "" : ` · ${info.state}`;
   return (
     <span
       className={`shrink-0 truncate ${connectionClass(info.state)}`}
-      title={info.message ?? (info.daemonVersion ? `daemon v${info.daemonVersion}` : undefined)}
+      title={info.message ?? daemonTitle}
     >
       {info.label}
       {suffix}

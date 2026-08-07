@@ -10,6 +10,8 @@ const LOCAL: ConnectionInfo = {
   remote: false,
   message: null,
   daemonVersion: null,
+  capabilities: [],
+  daemonStale: false,
   since: 0,
 };
 

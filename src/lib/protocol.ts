@@ -32,6 +32,16 @@ export interface ConnectionInfo {
   message: string | null;
   /** From the handshake, once it has happened. */
   daemonVersion: string | null;
+  /**
+   * Feature names the daemon reported. Empty means unknown — assume nothing
+   * (local, or an older daemon that never sent the field).
+   */
+  capabilities: string[];
+  /**
+   * True when a remote daemon's package version differs from this app's.
+   * The connection still works; the UI surfaces the fact. Always false local.
+   */
+  daemonStale: boolean;
   /** Unix epoch ms of the last state change; the feed's gap marker uses it. */
   since: number;
 }
@@ -150,6 +160,31 @@ export interface FsEvent {
   isDir: boolean;
   /** Unix epoch milliseconds. */
   at: number;
+}
+
+/**
+ * An `FsEvent` joined to the agent tool call that most likely caused it.
+ * `attribution` is `null` when nothing claimed the change — the user's own
+ * editor, or a write the correlation window could not safely tie to a call.
+ */
+export interface AttributedEvent {
+  event: FsEvent;
+  /** `null` when nothing claimed it — an external edit. */
+  attribution: Attribution | null;
+}
+
+/** Which agent tool call is believed to have caused a filesystem change. */
+export interface Attribution {
+  sessionId: string;
+  agent: AgentKind;
+  tool: string;
+  /** The agent's one-line intent, when the provider supplied one. */
+  summary: string | null;
+  /**
+   * True when claimed by a shell command rather than an explicit path —
+   * lower confidence, and the UI says so.
+   */
+  viaCommand: boolean;
 }
 
 /** Lifecycle state of the filesystem watcher for the open workspace. */
@@ -334,4 +369,8 @@ export interface AgentPoll {
 export const EVENT_FS_CHANGES = "fs-changes";
 export const EVENT_GIT_STATUS = "git-status";
 export const EVENT_WATCHER_STATUS = "watcher-status";
+/** Filesystem changes with optional agent attribution. */
+export const EVENT_ATTRIBUTED = "attributed-changes";
+/** Normalized agent activity from the background poller. */
+export const EVENT_AGENT_EVENTS = "agent-events";
 export const EVENT_CONNECTION = "connection";

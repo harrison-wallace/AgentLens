@@ -2,7 +2,7 @@
  * Pure activity-feed helpers. No React, no Tauri, no jsdom — kept plain so
  * they run under node-environment vitest.
  */
-import type { FsEvent, FsEventKind } from "./protocol";
+import type { Attribution, FsEvent, FsEventKind } from "./protocol";
 
 /** Default activity-feed batch cap — live window, not full history. */
 export const DEFAULT_FEED_MAX_ENTRIES = 250;
@@ -200,7 +200,14 @@ export function feedSortTitle(sort: FeedSort): string {
   }
 }
 
-type BatchEntry = { kind: "batch"; id: string; at: number; events: FsEvent[] };
+type BatchEntry = {
+  kind: "batch";
+  id: string;
+  at: number;
+  events: FsEvent[];
+  /** Optional so pure helpers accept pre-attribution fixtures. */
+  attributions?: Record<string, Attribution>;
+};
 type GapEntry = {
   kind: "gap";
   id: string;
@@ -211,14 +218,16 @@ type GapEntry = {
 type AnyEntry = BatchEntry | GapEntry;
 
 /**
- * Apply kind filter and sort. Gaps always survive filtering; under impact
- * sorts they sit after batches (newest gap first) so they don't scramble the
- * ranking. Under time sort the original newest-first interleave is preserved.
+ * Apply kind filter, optional agent-only filter, and sort. Gaps always
+ * survive filtering; under impact sorts they sit after batches (newest gap
+ * first) so they don't scramble the ranking. Under time sort the original
+ * newest-first interleave is preserved.
  */
 export function presentFeedEntries(
   entries: readonly AnyEntry[],
   filter: ReadonlySet<FsEventKind>,
   sort: FeedSort,
+  agentOnly = false,
 ): AnyEntry[] {
   const filtered: AnyEntry[] = [];
   for (const entry of entries) {
@@ -226,7 +235,11 @@ export function presentFeedEntries(
       filtered.push(entry);
       continue;
     }
-    const events = filterEvents(entry.events, filter);
+    let events = filterEvents(entry.events, filter);
+    if (agentOnly) {
+      const attrs = entry.attributions ?? {};
+      events = events.filter((e) => attrs[e.path] !== undefined);
+    }
     if (events.length === 0) continue;
     filtered.push(events === entry.events ? entry : { ...entry, events });
   }

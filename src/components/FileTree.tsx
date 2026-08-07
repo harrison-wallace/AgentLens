@@ -284,7 +284,7 @@ export default function FileTree() {
                 </span>
                 {isOpen && (
                   <span
-                    className="shrink-0 text-[9px] text-accent"
+                    className="shrink-0 text-[11px] text-accent"
                     title="Open in preview"
                     aria-label="Open in preview"
                   >

@@ -90,6 +90,11 @@ pub fn bootstrap(version: &str) -> String {
     format!(
         r#"V={version}
 D="$HOME/{root}/$V/agentlens-daemon"
+# The managed directory name is a hint, not a proof of identity: the binary
+# under it is only checksummed at install time, and nothing stops a stale or
+# corrupted copy from living at the "right" path thereafter. Trust the
+# handshake — `ConnectionInfo::daemon_stale` is set when `hello.version` does
+# not match this app, which is the real authority on what is running.
 if [ -x "$D" ]; then exec "$D" --stdio; fi
 matches() {{ "$1" --version 2>/dev/null | grep -qF " $V "; }}
 for d in "$HOME/.local/bin/agentlens-daemon" /usr/local/bin/agentlens-daemon /usr/bin/agentlens-daemon; do
@@ -745,6 +750,30 @@ mod tests {
         assert_eq!(
             String::from_utf8_lossy(&out.stdout).trim(),
             "manual-install --stdio"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_bootstrap_accepts_a_daemon_whose_version_matches_the_app() {
+        // The matcher greps for ` $V ` inside `--version` output. V is the
+        // *app* version; after the workspace version is unified, that is also
+        // what a correctly-built daemon prints — so a hand-installed copy of
+        // the same release must be accepted rather than forever rejected.
+        let version = env!("CARGO_PKG_VERSION");
+        let home = tempfile::tempdir().unwrap();
+        stub_daemon(
+            &home.path().join(".local/bin/agentlens-daemon"),
+            "app-matched",
+            version,
+        );
+
+        let out = run_bootstrap(home.path(), version);
+
+        assert!(out.status.success(), "{:?}", out);
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "app-matched --stdio"
         );
     }
 

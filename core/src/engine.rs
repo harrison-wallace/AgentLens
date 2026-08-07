@@ -11,20 +11,79 @@
 //! the user's behalf. The engine is told its settings and forgets them when
 //! the process ends.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::agents::claude::ClaudeCode;
+use crate::agents::grok::Grok;
 use crate::agents::{self, AgentProvider};
-use crate::protocol::{AgentPoll, Command, CommandResult, Hello, WorkspaceInfo, PROTOCOL_VERSION};
+use crate::correlate::Correlator;
+use crate::protocol::{
+    AgentKind, AgentPoll, Command, CommandResult, Hello, SessionRef, WorkspaceInfo, CAPABILITIES,
+    PROTOCOL_VERSION,
+};
 use crate::settings::{self, SettingsState};
 use crate::snapshots::{self, SessionState};
 use crate::watcher::{self, EventSink, WatcherManager};
 use crate::workspace::{self, WorkspaceState};
 use crate::{browse, gitops, gitstatus, preview, tree};
+
+/// How often the agent poller discovers sessions and tails them.
+///
+/// One second is a named constant rather than a magic number because the
+/// activity indicator and the correlation window both depend on it: faster
+/// would thrash disk for no user-visible gain, slower would make the header
+/// lag behind a turn that already finished.
+const AGENT_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Per-workspace agent providers. They own their read offsets, so they must
+/// outlive a single command — a fresh provider each poll would re-tail from
+/// the end and never report anything. They must *not* outlive the workspace,
+/// hence the reset on open and close.
+struct AgentState {
+    claude: ClaudeCode,
+    grok: Grok,
+}
+
+impl AgentState {
+    fn new() -> Self {
+        AgentState {
+            claude: ClaudeCode::new(),
+            grok: Grok::new(),
+        }
+    }
+
+    fn discover(&self, workspace: &Path, roots: &[PathBuf]) -> Vec<SessionRef> {
+        let mut sessions = self.claude.discover(workspace, roots);
+        sessions.extend(self.grok.discover(workspace, roots));
+        sessions.sort_by_key(|session| -session.last_activity);
+        sessions
+    }
+
+    fn poll(
+        &mut self,
+        workspace: &Path,
+        session: &SessionRef,
+        roots: &[PathBuf],
+    ) -> (Vec<crate::protocol::AgentEvent>, u64, u64) {
+        match session.agent {
+            AgentKind::ClaudeCode => {
+                let events = self.claude.poll(workspace, session, roots);
+                (events, self.claude.stats.records, self.claude.stats.skipped)
+            }
+            AgentKind::Grok => {
+                let events = self.grok.poll(workspace, session, roots);
+                (events, self.grok.stats.records, self.grok.stats.skipped)
+            }
+        }
+    }
+}
 
 /// The observing half of AgentLens, driven by commands.
 pub struct Engine {
@@ -32,23 +91,33 @@ pub struct Engine {
     watcher: Arc<WatcherManager>,
     settings: SettingsState,
     session: SessionState,
-    /// The agent providers own their read offsets, so they outlive a single
-    /// command — a fresh provider each poll would re-tail from the end and
-    /// never report anything. They must *not* outlive the workspace, hence
-    /// the reset on open and close.
-    agents: Mutex<ClaudeCode>,
+    agents: Arc<Mutex<AgentState>>,
+    /// Correlation decorator around the real sink. The watcher and the
+    /// poller both talk to this; it forwards to the caller's sink.
+    correlator: Arc<Correlator>,
+    /// Same object as `correlator`, held as a trait object so `watcher::start`
+    /// and git mutations can take `&Arc<dyn EventSink>` without re-wrapping.
     sink: Arc<dyn EventSink>,
+    /// Bumped on every poller start and stop. The poller thread remembers
+    /// the generation it was spawned with and exits once they differ — the
+    /// same pattern as [`WatcherManager`], so reopening a workspace cannot
+    /// leave two pollers running.
+    poller_generation: Arc<AtomicU64>,
 }
 
 impl Engine {
     pub fn new(sink: Arc<dyn EventSink>) -> Self {
+        let correlator = Arc::new(Correlator::new(sink));
+        let sink: Arc<dyn EventSink> = correlator.clone();
         Engine {
             workspace: WorkspaceState::default(),
             watcher: Arc::new(WatcherManager::default()),
             settings: SettingsState::default(),
             session: SessionState::default(),
-            agents: Mutex::new(ClaudeCode::new()),
+            agents: Arc::new(Mutex::new(AgentState::new())),
+            correlator,
             sink,
+            poller_generation: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -70,7 +139,9 @@ impl Engine {
                     name: env!("CARGO_PKG_NAME").to_string(),
                     version: env!("CARGO_PKG_VERSION").to_string(),
                     protocol_version: PROTOCOL_VERSION,
-                    capabilities: Vec::new(),
+                    // Reported so a newer app can ask an older daemon what it
+                    // supports without guessing from the package version.
+                    capabilities: CAPABILITIES.iter().map(|s| (*s).to_string()).collect(),
                 })
             }
             Command::Ping => ok(()),
@@ -186,7 +257,8 @@ impl Engine {
                 let ws = workspace::current(&self.workspace)?;
                 let roots =
                     agents::resolve_roots(&settings::current_app(&self.settings)?.agent_roots);
-                ok(ClaudeCode::new().discover(&ws.root, &roots))
+                let guard = self.agents.lock().map_err(|_| "agent state poisoned")?;
+                ok(guard.discover(&ws.root, &roots))
             }
             Command::AgentRoots => ok(agents::describe_roots(
                 &settings::current_app(&self.settings)?.agent_roots,
@@ -195,12 +267,16 @@ impl Engine {
                 let ws = workspace::current(&self.workspace)?;
                 let roots =
                     agents::resolve_roots(&settings::current_app(&self.settings)?.agent_roots);
-                let mut provider = self.agents.lock().map_err(|_| "agent state poisoned")?;
-                let events = provider.poll(&ws.root, &session, &roots);
+                let mut guard = self.agents.lock().map_err(|_| "agent state poisoned")?;
+                let (events, records, skipped) = guard.poll(&ws.root, &session, &roots);
+                // On-demand polls still feed the correlator so a UI that
+                // drives AgentEvents (instead of waiting for the background
+                // poller) still attributes file changes.
+                self.correlator.observe_agent_events(&events, session.agent);
                 ok(AgentPoll {
                     events,
-                    records: provider.stats.records,
-                    skipped: provider.stats.skipped,
+                    records,
+                    skipped,
                 })
             }
         }
@@ -221,6 +297,13 @@ impl Engine {
         let _ = self.close_workspace();
     }
 
+    /// Current poller generation. Tests assert that close/reopen bumps it so
+    /// a superseded thread exits rather than fighting its replacement.
+    #[cfg(test)]
+    pub fn poller_generation(&self) -> u64 {
+        self.poller_generation.load(Ordering::SeqCst)
+    }
+
     fn open_workspace(&self, path: &str) -> CommandResult<Value> {
         let opened = workspace::open(&self.workspace, Path::new(path))?;
         snapshots::restart(&self.session, &opened.root)?;
@@ -229,6 +312,7 @@ impl Engine {
         // close and the "couldn't parse N records" counter reports another
         // workspace's totals.
         self.reset_agents()?;
+        self.start_poller(opened.root.clone());
         // The watcher deliberately does not start here. It filters through
         // settings persisted against the *canonical* root, which the caller
         // only learns from this reply — so it follows with
@@ -237,6 +321,7 @@ impl Engine {
     }
 
     fn close_workspace(&self) -> CommandResult<Value> {
+        self.stop_poller();
         watcher::stop(&self.sink, &self.watcher);
         snapshots::clear(&self.session)?;
         settings::deactivate(&self.settings)?;
@@ -247,8 +332,73 @@ impl Engine {
 
     fn reset_agents(&self) -> CommandResult<()> {
         let mut guard = self.agents.lock().map_err(|_| "agent state poisoned")?;
-        *guard = ClaudeCode::new();
+        *guard = AgentState::new();
         Ok(())
+    }
+
+    /// Start (or replace) the background agent poller for `root`.
+    ///
+    /// Bumps the generation first so any previous poller exits on its next
+    /// tick, then spawns a thread that discovers sessions and polls every
+    /// provider on [`AGENT_POLL_INTERVAL`]. No agent roots, no sessions, or
+    /// an unreadable directory is quiet idling — never an error, never log
+    /// spam — so the app behaves exactly as it does today when no agent is
+    /// present.
+    fn start_poller(&self, root: PathBuf) {
+        let generation = self.poller_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let generation_handle = Arc::clone(&self.poller_generation);
+        let agents = Arc::clone(&self.agents);
+        let correlator = Arc::clone(&self.correlator);
+        let settings_app = Arc::new(Mutex::new(
+            settings::current_app(&self.settings).unwrap_or_default(),
+        ));
+        // Snapshot agent_roots at start; SetAppSettings mid-session is rare
+        // enough that re-reading every tick would buy little and couple the
+        // poller to SettingsState's lock. The next open picks up changes.
+        if let Ok(app) = settings::current_app(&self.settings) {
+            if let Ok(mut guard) = settings_app.lock() {
+                *guard = app;
+            }
+        }
+
+        thread::spawn(move || {
+            // Sleep first so open_workspace returns before the first disk
+            // walk; a workspace with no agents stays silent either way.
+            loop {
+                thread::sleep(AGENT_POLL_INTERVAL);
+                if generation_handle.load(Ordering::SeqCst) != generation {
+                    break;
+                }
+
+                let agent_roots = settings_app
+                    .lock()
+                    .map(|g| g.agent_roots.clone())
+                    .unwrap_or_default();
+                let roots = agents::resolve_roots(&agent_roots);
+
+                let Ok(mut guard) = agents.lock() else {
+                    continue;
+                };
+                let sessions = guard.discover(&root, &roots);
+                for session in sessions {
+                    if generation_handle.load(Ordering::SeqCst) != generation {
+                        return;
+                    }
+                    let (events, _, _) = guard.poll(&root, &session, &roots);
+                    if events.is_empty() {
+                        continue;
+                    }
+                    correlator.observe_agent_events(&events, session.agent);
+                    correlator.agent_events(&events);
+                }
+            }
+        });
+    }
+
+    fn stop_poller(&self) {
+        // Same as watcher::stop: bumping the generation is enough. The
+        // thread notices on its next tick and exits without being joined.
+        self.poller_generation.fetch_add(1, Ordering::SeqCst);
     }
 
     /// (Re)start the watcher against the visibility rules currently in effect.
@@ -293,7 +443,7 @@ fn ok<T: Serialize>(value: T) -> CommandResult<Value> {
 mod tests {
     use super::*;
     use crate::protocol::{
-        AppSettings, FsEvent, GitStatusSnapshot, WatcherStatus, WorkspaceSettings,
+        AgentEvent, AppSettings, FsEvent, GitStatusSnapshot, WatcherStatus, WorkspaceSettings,
     };
 
     /// Records what the engine pushes, so tests can assert on emissions
@@ -301,6 +451,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingSink {
         git_statuses: Mutex<Vec<GitStatusSnapshot>>,
+        agent_events: Mutex<Vec<AgentEvent>>,
     }
 
     impl EventSink for RecordingSink {
@@ -309,6 +460,12 @@ mod tests {
             self.git_statuses.lock().unwrap().push(snapshot.clone());
         }
         fn watcher_status(&self, _status: &WatcherStatus) {}
+        fn agent_events(&self, events: &[AgentEvent]) {
+            self.agent_events
+                .lock()
+                .unwrap()
+                .extend(events.iter().cloned());
+        }
     }
 
     fn engine() -> (Engine, Arc<RecordingSink>) {
@@ -337,6 +494,38 @@ mod tests {
             })
             .unwrap_err();
         assert!(err.contains("protocol version mismatch"), "{err}");
+    }
+
+    #[test]
+    fn hello_reports_the_capabilities_this_backend_ships() {
+        // A newer app learns what an older daemon can do from this list —
+        // empty would mean "unknown", so a live backend must fill it in.
+        let (engine, _) = engine();
+        let hello: Hello = serde_json::from_value(
+            engine
+                .handle(Command::Hello {
+                    protocol_version: PROTOCOL_VERSION,
+                })
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            hello.capabilities,
+            CAPABILITIES
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            hello.capabilities,
+            vec![
+                "agents".to_string(),
+                "correlation".to_string(),
+                "gitops".to_string(),
+                "preview".to_string(),
+                "snapshots".to_string(),
+            ],
+        );
     }
 
     #[test]
@@ -480,5 +669,63 @@ mod tests {
                 path: "../escape".into()
             })
             .is_err());
+    }
+
+    #[test]
+    fn opening_a_workspace_with_no_agent_roots_does_not_error_or_emit_agent_events() {
+        // The common case: no Claude, no Grok, just a directory. The poller
+        // must idle quietly — no error, no event storm — so the app looks
+        // exactly like phase 1.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "hello").unwrap();
+        let (engine, sink) = engine();
+
+        engine
+            .handle(Command::OpenWorkspace {
+                path: dir.path().to_string_lossy().into_owned(),
+            })
+            .unwrap();
+
+        // Give the poller a chance to tick once; with no agent roots it
+        // discovers nothing and emits nothing.
+        thread::sleep(Duration::from_millis(1_200));
+        assert!(
+            sink.agent_events.lock().unwrap().is_empty(),
+            "no agent present → no agent events"
+        );
+    }
+
+    #[test]
+    fn closing_a_workspace_stops_the_poller_via_the_generation_counter() {
+        let dir = tempfile::tempdir().unwrap();
+        let (engine, _) = engine();
+
+        engine
+            .handle(Command::OpenWorkspace {
+                path: dir.path().to_string_lossy().into_owned(),
+            })
+            .unwrap();
+        let after_open = engine.poller_generation();
+        assert!(
+            after_open > 0,
+            "open must start a poller and bump generation"
+        );
+
+        engine.handle(Command::CloseWorkspace).unwrap();
+        let after_close = engine.poller_generation();
+        assert!(
+            after_close > after_open,
+            "close must bump generation so the poller thread exits \
+             (open={after_open}, close={after_close})"
+        );
+
+        // Reopen must bump again — two pollers must never share a generation.
+        engine
+            .handle(Command::OpenWorkspace {
+                path: dir.path().to_string_lossy().into_owned(),
+            })
+            .unwrap();
+        assert!(engine.poller_generation() > after_close);
+        engine.handle(Command::CloseWorkspace).unwrap();
     }
 }

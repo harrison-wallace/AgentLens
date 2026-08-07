@@ -9,3 +9,10 @@
 [workspace]
 members = ["core", "daemon", "src-tauri"]
 resolver = "2"
+
+# One version for everything that ships together. The desktop app, the daemon
+# it installs, and the core both speak — they are cut from the same release,
+# so three Cargo.toml literals drifting apart is how bootstrap's version check
+# silently stops matching (see `remote::bootstrap`).
+[workspace.package]
+version = "0.8.0"

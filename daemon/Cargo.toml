@@ -1,6 +1,6 @@
 [package]
 name = "agentlens-daemon"
-version = "0.3.1"
+version.workspace = true
 description = "Headless AgentLens observer, spoken to over stdio — runs where the files are"
 authors = ["Harrison Wallace"]
 license = "MIT"

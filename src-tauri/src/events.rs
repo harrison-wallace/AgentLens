@@ -10,8 +10,8 @@
 //! is what lets the front end stay ignorant of where its backend runs.
 
 use agentlens_core::protocol::{
-    FsEvent, GitStatusSnapshot, WatcherStatus, EVENT_FS_CHANGES, EVENT_GIT_STATUS,
-    EVENT_WATCHER_STATUS,
+    AgentEvent, AttributedEvent, FsEvent, GitStatusSnapshot, WatcherStatus, EVENT_AGENT_EVENTS,
+    EVENT_ATTRIBUTED, EVENT_FS_CHANGES, EVENT_GIT_STATUS, EVENT_WATCHER_STATUS,
 };
 use agentlens_core::watcher::EventSink;
 use serde_json::Value;
@@ -44,6 +44,14 @@ impl EventSink for TauriEvents {
 
     fn watcher_status(&self, status: &WatcherStatus) {
         let _ = self.0.emit(EVENT_WATCHER_STATUS, status);
+    }
+
+    fn attributed_changes(&self, events: &[AttributedEvent]) {
+        let _ = self.0.emit(EVENT_ATTRIBUTED, events);
+    }
+
+    fn agent_events(&self, events: &[AgentEvent]) {
+        let _ = self.0.emit(EVENT_AGENT_EVENTS, events);
     }
 }
 

@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-07
+
+Agent attribution ships. AgentLens no longer just shows _that_ a file changed —
+it shows which agent tool call changed it, and what each session is doing right
+now. This is the feature the project exists for.
+
+### Added
+
+- **Changes are attributed to the agent tool call that caused them.** A new
+  correlation engine joins filesystem events to agent tool calls within a
+  three-second window, symmetric because a transcript write can lag or lead the
+  write it describes. Shell commands (`Bash`, `run_terminal_command`) name no
+  file, so they claim otherwise-unexplained changes in their window as
+  lower-confidence "via command", capped at 20 paths so a `cargo build` cannot
+  claim the tree. Anything unclaimed stays visibly unattributed — seeing which
+  changes were _not_ the agent's is half the point.
+- **Attribution arrives as an in-place upgrade.** The watcher debounces at
+  300 ms while agent sessions are polled every second, so a change is shown
+  immediately and gains its badge a moment later. Rows revise themselves rather
+  than waiting, so the feed is never held back by the slower of the two streams.
+- **A live activity indicator in the header.** One dot-matrix chip per running
+  session: colour is the state (working, waiting on you, idle), the animation
+  says which agent (Claude Code pulses, Grok travels), and speed and glow carry
+  intensity. A session waiting on a permission prompt is the only one that
+  demands attention. The cluster disappears entirely when nothing is running,
+  so it costs nothing in the ordinary case, and reduced-motion settings get a
+  static frame that still carries the state in colour.
+- **A session panel** listing every concurrent session with its tool tally and
+  current activity — several agents in one workspace is the normal case here,
+  not an edge case.
+- **An "agent changes only" filter** for the feed, for when your own editor is
+  open alongside.
+- **Grok file paths.** Grok's event log names tools but not files; the paths
+  come from the session's chat history, joined by tool-call id. That file also
+  holds prompts and edit bodies, so nothing is read from it but the paths.
+
+### Changed
+
+- **One version across the whole workspace.** `core`, `daemon` and the app now
+  inherit a single version from the workspace root instead of carrying three
+  independent ones. This was load-bearing, not cosmetic: the app finds a remote
+  daemon by matching version strings, and with the daemon reporting `0.3.1`
+  while the app looked for `0.7.0`, that check could never pass — every
+  hand-installed daemon was silently rejected.
+- **The daemon says what it can do.** Its handshake now reports a capability
+  list, so a newer app can ask an older daemon what it supports instead of
+  finding out when a command fails.
+- **A daemon older than the app is now visible.** The status bar and Settings
+  say so instead of leaving a version mismatch to surface as unexplained
+  behaviour later. The connection still works — only protocol disagreement is
+  fatal.
+
+### Fixed
+
+- **Interface text was soft and hard to read**, particularly in the file tree
+  and activity feed. The cause was `-webkit-font-smoothing: antialiased`, which
+  forces grayscale antialiasing and disables subpixel rendering — helpful on
+  macOS, the opposite on both platforms AgentLens targets. Small text is
+  noticeably sharper without it.
+- One tree indicator sat below every step of the documented type ladder and is
+  now on it.
+
 ## [0.7.0] - 2026-08-07
 
 Groundwork release. The activity state and the Grok provider are wired through

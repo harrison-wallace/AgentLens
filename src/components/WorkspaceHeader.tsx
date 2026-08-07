@@ -1,4 +1,5 @@
 import logo from "../assets/lens-logo.svg";
+import AgentActivityCluster from "./AgentActivityCluster";
 import { useFeedStore } from "../stores/feedStore";
 import { useGitStore } from "../stores/gitStore";
 import { useLayoutStore } from "../stores/layoutStore";
@@ -44,8 +45,10 @@ export default function WorkspaceHeader() {
     usePreviewStore.getState().invalidate(open);
   };
 
+  // `relative` so the agent cluster can centre as an absolute overlay —
+  // the path is flex-1 truncate and would push a normal middle child aside.
   return (
-    <header className="flex h-10 shrink-0 items-center gap-3 border-b border-border bg-surface-raised px-3">
+    <header className="relative flex h-10 shrink-0 items-center gap-3 border-b border-border bg-surface-raised px-3">
       {/* The only branding in the workspace shell: a mark, not a wordmark —
           the header's job is to say which folder you are watching, and the
           product name is not news to someone already inside the app. */}
@@ -56,6 +59,7 @@ export default function WorkspaceHeader() {
       <span className="min-w-0 flex-1 truncate text-[11px] text-text-muted" title={workspace.root}>
         {workspace.root}
       </span>
+      <AgentActivityCluster />
       <span className="shrink-0 text-[11px] text-text-muted">
         watching since {watchingSinceLabel(workspace.watchingSince)}
       </span>

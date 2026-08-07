@@ -1,0 +1,80 @@
+/*
+ * Dot-matrix activity indicator.
+ *
+ * WebKitGTK (Linux) is known to resolve `calc(var(--a) * var(--b))` inside
+ * animation timing as 0s and freeze the loop. Durations and delays are
+ * therefore literal `ms` values in CSS, overridden inline from JS as concrete
+ * strings when `speed` changes — never `var()` arithmetic in animation
+ * properties.
+ */
+
+.dot-matrix {
+  display: inline-grid;
+  grid-template-columns: repeat(5, 1fr);
+  grid-template-rows: repeat(5, 1fr);
+  color: inherit;
+  /* Filter bloom uses currentColor; keep it off the layout path. */
+  will-change: auto;
+}
+
+.dot-matrix__dot {
+  display: block;
+  border-radius: 9999px;
+  background-color: currentColor;
+  /* Rest opacity — the static frame for idle / reduced motion. */
+  opacity: 0.22;
+}
+
+.dot-matrix--bloom {
+  filter: drop-shadow(0 0 2px currentColor);
+}
+
+/* Base animation names only. Duration/delay/play-state come from inline
+   styles so speed is a concrete ms value, not a CSS variable product. */
+.dot-matrix--animated .dot-matrix__dot {
+  animation-iteration-count: infinite;
+  animation-timing-function: ease-in-out;
+  animation-fill-mode: both;
+}
+
+.dot-matrix--ripple.dot-matrix--animated .dot-matrix__dot {
+  animation-name: dm-ripple;
+}
+
+.dot-matrix--snake.dot-matrix--animated .dot-matrix__dot {
+  animation-name: dm-snake;
+}
+
+/* Concentric pulse: each ring peaks once per cycle. */
+@keyframes dm-ripple {
+  0%,
+  100% {
+    opacity: 0.15;
+  }
+  40%,
+  55% {
+    opacity: 1;
+  }
+}
+
+/* Travelling bright dot on the outer ring; inner dots stay dim. */
+@keyframes dm-snake {
+  0%,
+  100% {
+    opacity: 0.12;
+  }
+  8%,
+  18% {
+    opacity: 1;
+  }
+  28% {
+    opacity: 0.12;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dot-matrix--animated .dot-matrix__dot {
+    animation: none !important;
+    opacity: 0.45;
+  }
+}

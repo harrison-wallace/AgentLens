@@ -17,6 +17,7 @@
 
 pub mod agents;
 pub mod browse;
+pub mod correlate;
 pub mod engine;
 pub mod gitops;
 pub mod gitstatus;

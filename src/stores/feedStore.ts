@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { clampFeedMaxEntries, DEFAULT_FEED_MAX_ENTRIES } from "../lib/feed";
-import type { FsEvent } from "../lib/protocol";
+import type { AttributedEvent, Attribution, FsEvent } from "../lib/protocol";
 
 /**
  * The feed renders every entry it holds, so this bound is a DOM-node budget
@@ -17,9 +17,20 @@ const DEFAULT_MAX_ENTRIES = DEFAULT_FEED_MAX_ENTRIES;
  * The gap is not decoration. A remote connection *will* drop, and a feed that
  * simply resumes is claiming nothing happened during the outage — which is the
  * one thing it cannot know. Marking the window is the honest answer.
+ *
+ * `attributions` is filled in later by `applyAttribution`: the watcher emits
+ * unattributed first, and the correlator revises a moment later. In-place
+ * upgrade is the only path attribution ever takes onto the screen.
  */
 export type FeedEntry =
-  | { kind: "batch"; id: string; at: number; events: FsEvent[] }
+  | {
+      kind: "batch";
+      id: string;
+      at: number;
+      events: FsEvent[];
+      /** Workspace-relative path → agent tool call that claimed it. */
+      attributions: Record<string, Attribution>;
+    }
   | {
       kind: "gap";
       id: string;
@@ -49,6 +60,11 @@ interface FeedStore {
    */
   sessionTotals: SessionTotals;
   addBatch: (events: FsEvent[]) => void;
+  /**
+   * Merge agent attributions into existing batches. Always arrives after the
+   * raw change; null attributions are ignored (already correct as external).
+   */
+  applyAttribution: (events: AttributedEvent[]) => void;
   /** The connection went down at `at`; start marking the window. */
   beginGap: (at: number) => void;
   /** The connection came back at `at`; close the open window, if any. */
@@ -89,7 +105,13 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
 
   addBatch: (events) => {
     if (events.length === 0) return;
-    const entry: FeedEntry = { kind: "batch", id: id(), at: Date.now(), events };
+    const entry: FeedEntry = {
+      kind: "batch",
+      id: id(),
+      at: Date.now(),
+      events,
+      attributions: {},
+    };
     const delta = countSessionDelta(events);
     const prev = get().sessionTotals;
     const max = get().maxEntries;
@@ -100,6 +122,37 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
         deleted: prev.deleted + delta.deleted,
       },
     });
+  },
+
+  // Attribution always lags the raw fs event. Find the newest batch that
+  // still holds each path and replace the entry object so React re-renders;
+  // mutating `attributions` in place would leave the feed looking unclaimed.
+  applyAttribution: (events) => {
+    if (events.length === 0) return;
+    let entries = get().entries;
+    let changed = false;
+
+    for (const { event, attribution } of events) {
+      if (!attribution) continue;
+      const path = event.path;
+      for (let i = 0; i < entries.length; i += 1) {
+        const entry = entries[i];
+        if (!entry || entry.kind !== "batch") continue;
+        if (!entry.events.some((e) => e.path === path)) continue;
+        // Replace the entry rather than mutating — same reason as endGap.
+        if (!changed) {
+          entries = entries.slice();
+          changed = true;
+        }
+        entries[i] = {
+          ...entry,
+          attributions: { ...entry.attributions, [path]: attribution },
+        };
+        break;
+      }
+    }
+
+    if (changed) set({ entries });
   },
 
   beginGap: (at) => {

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import SessionPanel from "./SessionPanel";
 import { useFeedStore, type FeedEntry } from "../stores/feedStore";
 import { usePreviewStore } from "../stores/previewStore";
 import { useTreeStore } from "../stores/treeStore";
@@ -17,7 +18,7 @@ import {
   splitPath,
   type FeedSort,
 } from "../lib/feed";
-import type { FsEvent, FsEventKind } from "../lib/protocol";
+import type { AgentKind, Attribution, FsEvent, FsEventKind } from "../lib/protocol";
 
 /** Render at most this many rows per batch; the rest collapse to "+N more". */
 const MAX_ROWS_PER_BATCH = 20;
@@ -38,11 +39,79 @@ const KIND_LABEL: Record<FsEventKind, string> = {
   renamed: "renamed",
 };
 
+function agentMark(agent: AgentKind): string {
+  switch (agent) {
+    case "claudeCode":
+      return "C";
+    case "grok":
+      return "G";
+  }
+}
+
+/**
+ * Group key for "one tool call claimed these files". Paths from the same
+ * call share session + tool + summary + viaCommand; different calls stay
+ * separate even when the tool name matches.
+ */
+function attributionKey(attr: Attribution): string {
+  return `${attr.sessionId}\0${attr.tool}\0${attr.summary ?? ""}\0${attr.viaCommand ? "1" : "0"}`;
+}
+
+type RowGroup =
+  | { kind: "attributed"; key: string; attribution: Attribution; events: FsEvent[] }
+  | { kind: "plain"; events: FsEvent[] };
+
+/**
+ * Partition a batch into per-tool-call groups when attribution exists.
+ * Unattributed rows stay in one trailing plain group so external edits
+ * remain visibly unclaimed — that is the point, not a gap.
+ */
+function groupBatchEvents(
+  events: readonly FsEvent[],
+  attributions: Record<string, Attribution>,
+): RowGroup[] {
+  const groups: RowGroup[] = [];
+  const byKey = new Map<string, { attribution: Attribution; events: FsEvent[] }>();
+  const plain: FsEvent[] = [];
+
+  for (const event of events) {
+    const attr = attributions[event.path];
+    if (!attr) {
+      plain.push(event);
+      continue;
+    }
+    const key = attributionKey(attr);
+    const existing = byKey.get(key);
+    if (existing) {
+      existing.events.push(event);
+    } else {
+      byKey.set(key, { attribution: attr, events: [event] });
+    }
+  }
+
+  for (const [key, group] of byKey) {
+    groups.push({
+      kind: "attributed",
+      key,
+      attribution: group.attribution,
+      events: group.events,
+    });
+  }
+  if (plain.length > 0) {
+    groups.push({ kind: "plain", events: plain });
+  }
+  return groups;
+}
+
 export default function ActivityFeed() {
   const entries = useFeedStore((s) => s.entries);
   const revealPath = useTreeStore((s) => s.revealPath);
+  // Kind filter, sort, and agent-only live here together — the feed's view
+  // preferences, not a separate store. Default agent-only off so external
+  // edits stay in the list until the user asks otherwise.
   const [filter, setFilter] = useState<Set<FsEventKind>>(() => new Set());
   const [sort, setSort] = useState<FeedSort>("time");
+  const [agentOnly, setAgentOnly] = useState(false);
 
   // Forces a re-render every so often so "just now" / "12s ago" headers
   // stay roughly accurate without a timer per entry.
@@ -54,8 +123,8 @@ export default function ActivityFeed() {
 
   const totals = useMemo(() => countFeedByKind(entries), [entries]);
   const presented = useMemo(
-    () => presentFeedEntries(entries, filter, sort),
-    [entries, filter, sort],
+    () => presentFeedEntries(entries, filter, sort, agentOnly),
+    [entries, filter, sort, agentOnly],
   );
 
   const toggleKind = (kind: FsEventKind) => {
@@ -69,20 +138,26 @@ export default function ActivityFeed() {
 
   if (entries.length === 0) {
     return (
-      <div className="flex h-full items-center justify-center p-4 text-center text-xs text-text-muted">
-        No activity yet.
+      <div className="flex h-full min-h-0 flex-col">
+        <SessionPanel />
+        <div className="flex flex-1 items-center justify-center p-4 text-center text-xs text-text-muted">
+          No activity yet.
+        </div>
       </div>
     );
   }
 
   return (
     <div className="flex h-full min-h-0 flex-col">
+      <SessionPanel />
       <FeedToolbar
         totals={totals}
         filter={filter}
         sort={sort}
+        agentOnly={agentOnly}
         onToggleKind={toggleKind}
         onCycleSort={() => setSort((prev) => nextFeedSort(prev))}
+        onToggleAgentOnly={() => setAgentOnly((v) => !v)}
       />
       <div className="min-h-0 flex-1 overflow-y-auto">
         {presented.length === 0 ? (
@@ -96,7 +171,12 @@ export default function ActivityFeed() {
             ) : (
               <FeedBlock
                 key={entry.id}
-                entry={entry}
+                entry={{
+                  ...entry,
+                  // presentFeedEntries keeps attributions optional for pure
+                  // helper fixtures; the store always supplies an object.
+                  attributions: entry.attributions ?? {},
+                }}
                 onSelect={(path) => {
                   void revealPath(path);
                   void usePreviewStore.getState().openPermanent(path);
@@ -111,21 +191,26 @@ export default function ActivityFeed() {
 }
 
 /**
- * Compact status-bar twin: kind counts as filters, mono sort on the right.
- * Totals are always for the full live feed, not the active filter.
+ * Compact status-bar twin: kind counts as filters, agent-only toggle, mono
+ * sort on the right. Totals are always for the full live feed, not the
+ * active filter.
  */
 function FeedToolbar({
   totals,
   filter,
   sort,
+  agentOnly,
   onToggleKind,
   onCycleSort,
+  onToggleAgentOnly,
 }: {
   totals: Record<FsEventKind, number>;
   filter: ReadonlySet<FsEventKind>;
   sort: FeedSort;
+  agentOnly: boolean;
   onToggleKind: (kind: FsEventKind) => void;
   onCycleSort: () => void;
+  onToggleAgentOnly: () => void;
 }) {
   const filtering = filter.size > 0;
 
@@ -161,6 +246,21 @@ function FeedToolbar({
           );
         })}
       </span>
+      <button
+        type="button"
+        onClick={onToggleAgentOnly}
+        aria-pressed={agentOnly}
+        title={
+          agentOnly
+            ? "Showing agent changes only — click to show all"
+            : "Show only changes attributed to an agent"
+        }
+        className={`shrink-0 rounded px-0.5 hover:bg-hover hover:text-text ${
+          agentOnly ? "text-text underline decoration-current underline-offset-2" : ""
+        }`}
+      >
+        agent
+      </button>
       <button
         type="button"
         onClick={onCycleSort}
@@ -204,8 +304,26 @@ function FeedBlock({
   entry: Extract<FeedEntry, { kind: "batch" }>;
   onSelect: (path: string) => void;
 }) {
-  const shown = entry.events.slice(0, MAX_ROWS_PER_BATCH);
-  const hidden = entry.events.length - shown.length;
+  const groups = groupBatchEvents(entry.events, entry.attributions);
+  // Flatten for the +N more budget — same cap as before, across groups.
+  let remaining = MAX_ROWS_PER_BATCH;
+  const rendered: {
+    group: RowGroup;
+    events: FsEvent[];
+  }[] = [];
+  let hidden = 0;
+
+  for (const group of groups) {
+    if (remaining <= 0) {
+      hidden += group.events.length;
+      continue;
+    }
+    const slice = group.events.slice(0, remaining);
+    hidden += group.events.length - slice.length;
+    remaining -= slice.length;
+    rendered.push({ group, events: slice });
+  }
+
   const parts = kindCountParts(countByKind(entry.events));
 
   return (
@@ -220,14 +338,61 @@ function FeedBlock({
           ))}
         </span>
       </div>
-      <ul className="mt-1 flex flex-col gap-0.5">
-        {shown.map((event, i) => (
-          <li key={`${event.path}:${i}`}>
-            <EventRow event={event} onSelect={onSelect} />
-          </li>
-        ))}
-      </ul>
+      <div className="mt-1 flex flex-col gap-1.5">
+        {rendered.map(({ group, events }, gi) =>
+          group.kind === "attributed" ? (
+            <div key={group.key}>
+              <AttributionBadge attribution={group.attribution} />
+              <ul className="mt-0.5 flex flex-col gap-0.5">
+                {events.map((event, i) => (
+                  <li key={`${event.path}:${i}`}>
+                    <EventRow event={event} onSelect={onSelect} />
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : (
+            <ul key={`plain-${gi}`} className="flex flex-col gap-0.5">
+              {events.map((event, i) => (
+                <li key={`${event.path}:${i}`}>
+                  <EventRow event={event} onSelect={onSelect} />
+                </li>
+              ))}
+            </ul>
+          ),
+        )}
+      </div>
       {hidden > 0 && <p className="mt-1 px-1 text-[11px] text-text-muted">+{hidden} more</p>}
+    </div>
+  );
+}
+
+/**
+ * Provider mark + tool (+ optional summary). `viaCommand` is visibly lower
+ * confidence — a shell tool claiming a file is weaker than Edit naming it.
+ */
+function AttributionBadge({ attribution }: { attribution: Attribution }) {
+  const via = attribution.viaCommand;
+  const summary = attribution.summary?.trim();
+  const toolPart = via ? `via ${attribution.tool}` : attribution.tool;
+
+  return (
+    <div
+      className={`flex min-w-0 items-baseline gap-1.5 px-1 text-[11px] ${
+        via ? "text-text-ash" : "text-text-muted"
+      }`}
+      title={
+        via
+          ? `Claimed via command ${attribution.tool} (lower confidence)`
+          : `${attribution.tool}${summary ? ` — ${summary}` : ""}`
+      }
+    >
+      <span className="w-3 shrink-0 text-center font-medium" aria-hidden>
+        {agentMark(attribution.agent)}
+      </span>
+      <span className="shrink-0">{toolPart}</span>
+      {summary && !via && <span className="min-w-0 truncate text-text-ash">— {summary}</span>}
+      {summary && via && <span className="min-w-0 truncate opacity-80">— {summary}</span>}
     </div>
   );
 }

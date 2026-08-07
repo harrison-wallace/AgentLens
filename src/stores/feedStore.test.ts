@@ -111,4 +111,73 @@ describe("feedStore", () => {
     expect(useFeedStore.getState().entries).toHaveLength(50);
     expect(useFeedStore.getState().sessionTotals).toEqual(totals);
   });
+
+  it("starts batches with empty attributions and upgrades in place", () => {
+    const store = useFeedStore.getState();
+    store.addBatch([change("a.ts"), change("b.ts")]);
+    const before = useFeedStore.getState().entries[0];
+    expect(before).toMatchObject({ kind: "batch", attributions: {} });
+
+    store.applyAttribution([
+      {
+        event: change("a.ts"),
+        attribution: {
+          sessionId: "s1",
+          agent: "claudeCode",
+          tool: "Edit",
+          summary: "fix typo",
+          viaCommand: false,
+        },
+      },
+      {
+        event: change("ghost.ts"),
+        attribution: {
+          sessionId: "s1",
+          agent: "claudeCode",
+          tool: "Write",
+          summary: null,
+          viaCommand: false,
+        },
+      },
+      {
+        event: change("b.ts"),
+        attribution: null,
+      },
+    ]);
+
+    const after = useFeedStore.getState().entries[0];
+    expect(after?.kind).toBe("batch");
+    if (after?.kind !== "batch") return;
+    // New object so React re-renders; path a claimed, b and ghost untouched.
+    expect(after).not.toBe(before);
+    expect(after.attributions["a.ts"]).toMatchObject({ tool: "Edit", summary: "fix typo" });
+    expect(after.attributions["b.ts"]).toBeUndefined();
+    expect(after.attributions["ghost.ts"]).toBeUndefined();
+  });
+
+  it("attributes into the most recent batch that still holds the path", () => {
+    const store = useFeedStore.getState();
+    store.addBatch([change("a.ts")]);
+    store.addBatch([change("a.ts"), change("c.ts")]);
+
+    store.applyAttribution([
+      {
+        event: change("a.ts"),
+        attribution: {
+          sessionId: "s1",
+          agent: "grok",
+          tool: "Write",
+          summary: null,
+          viaCommand: true,
+        },
+      },
+    ]);
+
+    const entries = useFeedStore.getState().entries;
+    expect(entries[0]?.kind).toBe("batch");
+    expect(entries[1]?.kind).toBe("batch");
+    if (entries[0]?.kind !== "batch" || entries[1]?.kind !== "batch") return;
+    expect(entries[0].attributions["a.ts"]?.agent).toBe("grok");
+    expect(entries[1].attributions["a.ts"]).toBeUndefined();
+  });
 });

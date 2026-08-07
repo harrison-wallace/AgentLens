@@ -11,10 +11,18 @@ import Splitter from "./components/Splitter";
 import StatusBar from "./components/StatusBar";
 import Toasts from "./components/Toasts";
 import WorkspaceHeader from "./components/WorkspaceHeader";
-import { onConnection, onFsChanges, onGitStatus, onWatcherStatus } from "./lib/events";
+import {
+  onAgentEvents,
+  onAttributedChanges,
+  onConnection,
+  onFsChanges,
+  onGitStatus,
+  onWatcherStatus,
+} from "./lib/events";
 import { formatLocation } from "./lib/location";
 import { quickPickOpen } from "./lib/quickPick";
 import { checkForUpdate } from "./lib/tauri";
+import { useAgentStore } from "./stores/agentStore";
 import { useAppearanceStore } from "./stores/appearanceStore";
 import { useConnectionStore } from "./stores/connectionStore";
 import { useFeedStore } from "./stores/feedStore";
@@ -112,6 +120,16 @@ export default function App() {
     const watcherStatus = onWatcherStatus((status) => {
       useWatcherStore.getState().set(status);
     });
+    // Agent poller batches and the correlator's late attributions. Same
+    // unlisten-on-promise pattern as the other listeners: if this effect
+    // cleans up before listen resolves, the subscription is already live
+    // and dropping the handle would leak it.
+    const agentEvents = onAgentEvents((events) => {
+      useAgentStore.getState().apply(events);
+    });
+    const attributed = onAttributedChanges((events) => {
+      useFeedStore.getState().applyAttribution(events);
+    });
     // A remote link dropping and coming back is the one event that invalidates
     // everything at once: the daemon that comes back is a new process, so what
     // is on screen was read from one that no longer exists.
@@ -133,6 +151,7 @@ export default function App() {
           void useTreeStore.getState().reloadLoaded();
           void useGitStore.getState().refresh();
           void useWatcherStore.getState().refresh();
+          void useAgentStore.getState().refresh();
         }
       }
     });
@@ -141,6 +160,8 @@ export default function App() {
       void fsChanges.then((unlisten) => unlisten());
       void gitStatus.then((unlisten) => unlisten());
       void watcherStatus.then((unlisten) => unlisten());
+      void agentEvents.then((unlisten) => unlisten());
+      void attributed.then((unlisten) => unlisten());
       void connection.then((unlisten) => unlisten());
     };
   }, []);
@@ -238,6 +259,7 @@ export default function App() {
     useGitStore.getState().reset();
     useFeedStore.getState().clear();
     useWatcherStore.getState().reset();
+    useAgentStore.getState().reset();
     usePaletteStore.getState().reset();
     useSettingsStore.getState().reset();
     if (workspace) {
@@ -247,6 +269,7 @@ export default function App() {
       void useGitStore.getState().refreshBranches();
       void useWatcherStore.getState().refresh();
       void useSettingsStore.getState().refresh();
+      void useAgentStore.getState().refresh();
     }
   }, [workspace]);
 

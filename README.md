@@ -6,7 +6,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/harrison-wallace/AgentLens/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/harrison-wallace/AgentLens/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/actions/workflow/status/harrison-wallace/AgentLens/release.yml?style=flat-square&label=release)](https://github.com/harrison-wallace/AgentLens/actions/workflows/release.yml)
-[![Version](https://img.shields.io/badge/version-0.7.0-6366f1?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.8.0-6366f1?style=flat-square)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 
 [![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app)
@@ -20,14 +20,20 @@ read-only window into what your terminal coding agent (Claude Code, Grok, …)
 is doing to a directory: live file tree, change feed, git status, read-only
 previews. Runs on Windows and Ubuntu.
 
-**Status:** v0.7.0 — the MVP feature set is complete, including remote
-workspaces over WSL and SSH with no manual setup on the remote machine. Still
-pre-alpha: acceptance testing on Windows and Ubuntu is outstanding.
+**Status:** v0.8.0 — the MVP feature set is complete: agent attribution (the
+thing AgentLens exists for), plus remote workspaces over WSL and SSH with no
+manual setup on the remote machine. Still pre-alpha: acceptance testing on
+Windows and Ubuntu is outstanding.
 
 ![AgentLens v0.5.0 — file tree, preview tabs, activity feed, and status bar](docs/images/v0-5-0.png)
 
 ## What works today
 
+- **Agent attribution** — changes made by Claude Code or Grok are labelled
+  with the tool call that made them and why, while your own edits stay
+  visibly unattributed. A live indicator in the header shows what each
+  session is doing right now — working, waiting on you, or idle — with one
+  chip per session when several are running at once.
 - **Live file tree** — virtualized, lazy, gitignore-aware, with git status
   badges and a fading highlight on whatever just changed.
 - **Activity feed** — filesystem changes grouped per debounced burst; filter

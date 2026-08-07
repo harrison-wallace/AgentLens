@@ -28,7 +28,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::gitstatus;
 use crate::ignores::is_extra_ignored;
 use crate::paths::{resolve_in_workspace, to_workspace_relative};
-use crate::protocol::{FsEvent, FsEventKind, GitStatusSnapshot, WatcherState, WatcherStatus};
+use crate::protocol::{
+    AgentEvent, AttributedEvent, FsEvent, FsEventKind, GitStatusSnapshot, WatcherState,
+    WatcherStatus,
+};
 use crate::tree::BUILTIN_IGNORED_DIRS;
 use crate::visibility::Visibility;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
@@ -49,10 +52,22 @@ const MAX_BATCH: usize = 500;
 /// forwards to Tauri events; running headless it will write protocol messages
 /// to stdout instead. Keeping it a trait is what lets the same watcher serve
 /// both without a line of conditional code.
+///
+/// Optional methods default to no-ops so older sinks (and tests) keep
+/// compiling when a new event kind is added; the correlator and agent poller
+/// only need implementations that care about them.
 pub trait EventSink: Send + Sync + 'static {
     fn fs_changes(&self, events: &[FsEvent]);
     fn git_status(&self, snapshot: &GitStatusSnapshot);
     fn watcher_status(&self, status: &WatcherStatus);
+
+    /// Filesystem changes with optional agent attribution. Default is empty
+    /// so sinks that only care about the raw feed compile unchanged.
+    fn attributed_changes(&self, _events: &[AttributedEvent]) {}
+
+    /// Agent session activity from the background poller. Default is empty
+    /// for the same reason: not every sink needs live session state.
+    fn agent_events(&self, _events: &[AgentEvent]) {}
 }
 
 /// Everything that decides whether a path reaches the feed, kept together so

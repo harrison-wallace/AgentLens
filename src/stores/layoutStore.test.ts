@@ -8,6 +8,7 @@ function state(overrides: Partial<LayoutState>): LayoutState {
     treeCollapsed: false,
     feedCollapsed: false,
     previewCollapsed: false,
+    sessionsCollapsed: false,
     ...overrides,
   };
 }

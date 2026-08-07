@@ -236,7 +236,11 @@ function DaemonCommand() {
       {connection.remote && (
         <p className="mt-1.5 text-xs text-text-muted">
           Connected to {connection.label}
-          {connection.daemonVersion ? ` · daemon v${connection.daemonVersion}` : ""}
+          {connection.daemonVersion
+            ? ` · daemon v${connection.daemonVersion}${
+                connection.daemonStale ? " (out of date)" : ""
+              }`
+            : ""}
         </p>
       )}
     </div>

@@ -30,8 +30,9 @@ use std::time::{Duration, Instant};
 
 use agentlens_core::engine::Engine;
 use agentlens_core::protocol::{
-    Frame, FsEvent, GitStatusSnapshot, WatcherStatus, EVENT_FS_CHANGES, EVENT_GIT_STATUS,
-    EVENT_HEARTBEAT, EVENT_WATCHER_STATUS, PROTOCOL_VERSION,
+    AgentEvent, AttributedEvent, Frame, FsEvent, GitStatusSnapshot, WatcherStatus,
+    EVENT_AGENT_EVENTS, EVENT_ATTRIBUTED, EVENT_FS_CHANGES, EVENT_GIT_STATUS, EVENT_HEARTBEAT,
+    EVENT_WATCHER_STATUS, PROTOCOL_VERSION,
 };
 use agentlens_core::watcher::EventSink;
 use agentlens_core::workspace::now_millis;
@@ -234,6 +235,14 @@ impl EventSink for StdoutSink {
 
     fn watcher_status(&self, status: &WatcherStatus) {
         self.emit(EVENT_WATCHER_STATUS, serde_json::to_value(status));
+    }
+
+    fn attributed_changes(&self, events: &[AttributedEvent]) {
+        self.emit(EVENT_ATTRIBUTED, serde_json::to_value(events));
+    }
+
+    fn agent_events(&self, events: &[AgentEvent]) {
+        self.emit(EVENT_AGENT_EVENTS, serde_json::to_value(events));
     }
 }
 
