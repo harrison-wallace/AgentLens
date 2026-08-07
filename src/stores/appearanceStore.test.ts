@@ -1,11 +1,14 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clampPreviewFontSize,
+  clampTheme,
   clampZoom,
   DEFAULT_PREVIEW_FONT_SIZE,
+  DEFAULT_THEME,
   DEFAULT_ZOOM,
   MAX_ZOOM,
   MIN_ZOOM,
+  resolveTheme,
   stepZoom,
   useAppearanceStore,
 } from "./appearanceStore";
@@ -57,14 +60,90 @@ describe("clampPreviewFontSize", () => {
   });
 });
 
+describe("clampTheme", () => {
+  it("accepts the three named modes", () => {
+    expect(clampTheme("system")).toBe("system");
+    expect(clampTheme("dark")).toBe("dark");
+    expect(clampTheme("light")).toBe("light");
+  });
+
+  it("falls back for anything else", () => {
+    expect(clampTheme("auto")).toBe(DEFAULT_THEME);
+    expect(clampTheme(null)).toBe(DEFAULT_THEME);
+    expect(clampTheme(1)).toBe(DEFAULT_THEME);
+  });
+});
+
+function stubMatchMedia(matches: boolean): void {
+  // Node vitest has no window; resolveTheme reads window.matchMedia.
+  vi.stubGlobal("window", {
+    matchMedia: (query: string) => ({
+      matches,
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+      onchange: null,
+    }),
+  });
+}
+
+/** Minimal in-memory localStorage for the node test environment. */
+function stubLocalStorage(initial: Record<string, string> = {}): Map<string, string> {
+  const map = new Map(Object.entries(initial));
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => map.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      map.set(key, value);
+    },
+    removeItem: (key: string) => {
+      map.delete(key);
+    },
+    clear: () => map.clear(),
+  });
+  return map;
+}
+
+describe("resolveTheme", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("returns absolute modes as-is", () => {
+    expect(resolveTheme("dark")).toBe("dark");
+    expect(resolveTheme("light")).toBe("light");
+  });
+
+  it("picks light when matchMedia reports a light preference", () => {
+    stubMatchMedia(true);
+    expect(resolveTheme("system")).toBe("light");
+  });
+
+  it("picks dark when matchMedia reports a dark preference", () => {
+    stubMatchMedia(false);
+    expect(resolveTheme("system")).toBe("dark");
+  });
+});
+
 describe("useAppearanceStore", () => {
   beforeEach(() => {
-    // jsdom provides this; the node environment the pure helpers run under does not.
-    if (typeof localStorage !== "undefined") localStorage.removeItem(STORAGE_KEY);
+    // Node vitest has no DOM storage; give the store somewhere to write.
+    stubLocalStorage();
     useAppearanceStore.setState({
       zoom: DEFAULT_ZOOM,
       previewFontSize: DEFAULT_PREVIEW_FONT_SIZE,
+      theme: DEFAULT_THEME,
     });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("defaults theme to dark", () => {
+    expect(useAppearanceStore.getState().theme).toBe("dark");
   });
 
   it("steps and resets the zoom", () => {
@@ -83,5 +162,21 @@ describe("useAppearanceStore", () => {
 
     useAppearanceStore.getState().setPreviewFontSize(400);
     expect(useAppearanceStore.getState().previewFontSize).toBe(24);
+  });
+
+  it("persists setTheme", () => {
+    useAppearanceStore.getState().setTheme("light");
+    expect(useAppearanceStore.getState().theme).toBe("light");
+    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}") as { theme?: string };
+    expect(stored.theme).toBe("light");
+  });
+
+  it("falls back when a stored theme is corrupt", async () => {
+    stubLocalStorage({
+      [STORAGE_KEY]: JSON.stringify({ zoom: 1, previewFontSize: 12, theme: "neon" }),
+    });
+    vi.resetModules();
+    const { useAppearanceStore: reloaded } = await import("./appearanceStore");
+    expect(reloaded.getState().theme).toBe(DEFAULT_THEME);
   });
 });

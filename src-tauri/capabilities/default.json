@@ -7,6 +7,9 @@
     "core:default",
     "dialog:allow-open",
     "core:window:allow-set-fullscreen",
-    "core:webview:allow-set-webview-zoom"
+    "core:window:allow-set-theme",
+    "core:webview:allow-set-webview-zoom",
+    "window-state:default",
+    "opener:allow-open-url"
   ]
 }

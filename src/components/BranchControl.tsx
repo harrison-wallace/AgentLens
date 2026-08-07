@@ -1,5 +1,5 @@
-import { useState } from "react";
 import BranchPicker from "./BranchPicker";
+import { useBranchPickerStore } from "../stores/branchPickerStore";
 import { useGitStore } from "../stores/gitStore";
 
 /**
@@ -8,13 +8,15 @@ import { useGitStore } from "../stores/gitStore";
  * The picker it opens is the file jump's widget rather than a dropdown of its
  * own: switching branch and jumping to a file are the same gesture — name the
  * thing you already have in mind — and they should not be two different ones.
+ * Open state lives in a store so the command palette can open the same picker.
  */
 export default function BranchControl() {
   const branches = useGitStore((s) => s.branches);
   const capabilities = useGitStore((s) => s.capabilities);
   const busy = useGitStore((s) => s.busy);
-
-  const [open, setOpen] = useState(false);
+  const open = useBranchPickerStore((s) => s.open);
+  const show = useBranchPickerStore((s) => s.show);
+  const hide = useBranchPickerStore((s) => s.hide);
 
   if (!branches || !capabilities?.canMutate) return null;
 
@@ -24,7 +26,7 @@ export default function BranchControl() {
     <>
       <button
         type="button"
-        onClick={() => setOpen(true)}
+        onClick={() => show()}
         disabled={busy}
         aria-haspopup="dialog"
         aria-expanded={open}
@@ -33,7 +35,7 @@ export default function BranchControl() {
       >
         ⑂ {label} ▾
       </button>
-      {open && <BranchPicker branches={branches} onClose={() => setOpen(false)} />}
+      {open && <BranchPicker branches={branches} onClose={() => hide()} />}
     </>
   );
 }

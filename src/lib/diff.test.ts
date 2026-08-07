@@ -120,10 +120,18 @@ describe("diffUnavailableReason", () => {
     );
   });
 
-  it("explains that git ignores the file", () => {
+  it("explains that an untracked file has nothing to compare", () => {
     expect(diffUnavailableReason(sessionDiff({ unavailable: "notTracked" }))).toMatch(
-      /Git ignores this file/,
+      /isn't tracked/,
     );
+  });
+
+  it("explains that a binary file has no line diff", () => {
+    expect(diffUnavailableReason(sessionDiff({ unavailable: "notText" }))).toMatch(/Binary file/);
+  });
+
+  it("explains that an oversized file cannot be diffed", () => {
+    expect(diffUnavailableReason(sessionDiff({ unavailable: "tooLarge" }))).toMatch(/too large/);
   });
 
   it("explains when neither side has readable content", () => {

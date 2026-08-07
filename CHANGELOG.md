@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-07
+
+### Added
+
+- **Diff against `HEAD` and against the index.** The preview's diff view now
+  offers three sources instead of one: since the session started, working tree
+  vs `HEAD`, and staged vs `HEAD`. All three share the existing renderer, so
+  hunk collapsing and the large-diff cap apply to each. Every side is read
+  through `git cat-file -s` first and capped at 1 MiB, matching the session
+  snapshot limit — a large tracked file reports itself as too large instead of
+  shipping megabytes down the protocol. Binary content and untracked paths say
+  what they are rather than rendering as a whole-file addition.
+- **Command palette and a shortcuts help page.** `Ctrl+Shift+P` opens a fuzzy
+  command palette over one flat registry (file, view, git, session commands);
+  `F1` or `Ctrl+/` opens a shortcuts reference generated from that same
+  registry, so the documented keys cannot drift from the real ones. `Ctrl+P`
+  remains the file jump, and both modes share the existing quick-pick widget.
+- **Light theme, with an option to follow the OS.** Selectable from Settings
+  (System / Dark / Light). The theme is resolved before first paint by a small
+  inline script, so switching does not flash the old colours, and syntax
+  highlighting carries both ramps at once rather than re-highlighting open
+  files on a change.
+- **Non-modal error toasts.** Failures that previously had nowhere to go — a
+  workspace that would not open, a settings save that failed with the panel
+  closed — now surface as dismissible toasts with a copyable detail drawer.
+  Never a dialog, and never a timer that removes an error before it is read.
+- **Window size and position persist** across restarts, alongside the panel
+  layout that already did.
+- **Notify-only update check.** At startup AgentLens asks GitHub whether a
+  newer release exists and, if so, says so once with a link. Nothing is ever
+  downloaded or installed, every failure (offline, rate-limited, unparseable)
+  is silent, and the whole thing switches off in Settings.
+
+### Changed
+
+- `DiffUnavailable` gained `notText` and `tooLarge`, and its wording is no
+  longer session-specific now that git diffs share the type.
+- The window no longer pins itself to the dark theme in `tauri.conf.json`, so
+  the runtime theme setting owns the title bar.
+
+### Fixed
+
+- The branch picker's open state moved into a store, so the palette's
+  "Switch branch…" opens the same widget the status bar does rather than a
+  second copy of it.
+
 ## [0.5.1] - 2026-08-02
 
 ### Fixed

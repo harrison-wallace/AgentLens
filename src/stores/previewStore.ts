@@ -1,9 +1,18 @@
 import { create } from "zustand";
-import { readPreview, sessionDiff } from "../lib/tauri";
+import { gitDiff, readPreview, sessionDiff } from "../lib/tauri";
 import type { PreviewPayload, SessionDiff } from "../lib/protocol";
 
-/** Current file body vs session diff — a mode of the active tab, not a tab. */
-export type PreviewMode = "current" | "diff";
+/** Current file body vs one of the three diff sources — a mode of the active tab. */
+export type PreviewMode = "current" | "diff" | "gitWorking" | "gitStaged";
+
+/** Diff modes only; the three comparisons cache independently per path. */
+export type DiffMode = Exclude<PreviewMode, "current">;
+
+const PREVIEW_MODES: readonly PreviewMode[] = ["current", "diff", "gitWorking", "gitStaged"];
+
+function isPreviewMode(value: unknown): value is PreviewMode {
+  return typeof value === "string" && (PREVIEW_MODES as readonly string[]).includes(value);
+}
 
 /** Soft cap; oldest permanent tabs drop when a new one would exceed it. */
 export const MAX_OPEN_TABS = 20;
@@ -19,10 +28,14 @@ export interface OpenTab {
 
 interface PathCache {
   payload: PreviewPayload | null;
-  diff: SessionDiff | null;
+  /** One entry per diff mode so switching sources does not re-fetch. */
+  diffs: Partial<Record<DiffMode, SessionDiff>>;
   /** Which side(s) have been fetched at least once. */
   hasPayload: boolean;
-  hasDiff: boolean;
+}
+
+function emptyPathCache(): PathCache {
+  return { payload: null, diffs: {}, hasPayload: false };
 }
 
 function toErrorMessage(err: unknown): string {
@@ -110,6 +123,10 @@ function withActive(tabs: OpenTab[], activePath: string | null): OpenTab | null 
   return tabs.find((t) => t.path === activePath) ?? null;
 }
 
+function isDiffMode(mode: PreviewMode): mode is DiffMode {
+  return mode !== "current";
+}
+
 export const usePreviewStore = create<PreviewStore>((set, get) => {
   /** Per-path content cache so switching tabs does not re-fetch. */
   let cache = new Map<string, PathCache>();
@@ -133,10 +150,10 @@ export const usePreviewStore = create<PreviewStore>((set, get) => {
       });
       return true;
     }
-    if (mode === "diff" && entry.hasDiff) {
+    if (isDiffMode(mode) && entry.diffs[mode] !== undefined) {
       set({
         payload: null,
-        diff: entry.diff,
+        diff: entry.diffs[mode]!,
         loading: false,
         error: null,
       });
@@ -151,26 +168,24 @@ export const usePreviewStore = create<PreviewStore>((set, get) => {
 
     set({ loading: true, error: null, payload: null, diff: null });
     try {
-      if (mode === "diff") {
-        const diff = await sessionDiff(path);
+      if (isDiffMode(mode)) {
+        const diff =
+          mode === "diff"
+            ? await sessionDiff(path)
+            : mode === "gitWorking"
+              ? await gitDiff(path, false)
+              : await gitDiff(path, true);
         if (gen !== loadGen || get().activePath !== path) return;
-        const prev = cache.get(path) ?? {
-          payload: null,
-          diff: null,
-          hasPayload: false,
-          hasDiff: false,
-        };
-        cache.set(path, { ...prev, diff, hasDiff: true });
+        const prev = cache.get(path) ?? emptyPathCache();
+        cache.set(path, {
+          ...prev,
+          diffs: { ...prev.diffs, [mode]: diff },
+        });
         set({ diff, payload: null, loading: false, error: null });
       } else {
         const payload = await readPreview(path);
         if (gen !== loadGen || get().activePath !== path) return;
-        const prev = cache.get(path) ?? {
-          payload: null,
-          diff: null,
-          hasPayload: false,
-          hasDiff: false,
-        };
+        const prev = cache.get(path) ?? emptyPathCache();
         cache.set(path, { ...prev, payload, hasPayload: true });
         set({ payload, diff: null, loading: false, error: null });
       }
@@ -325,6 +340,7 @@ export const usePreviewStore = create<PreviewStore>((set, get) => {
     },
 
     invalidate: (paths) => {
+      // Drop the whole entry so every diff mode re-fetches, not just the active one.
       for (const path of paths) cache.delete(path);
       const active = get().activePath;
       if (active && [...paths].includes(active)) {
@@ -352,7 +368,8 @@ export const usePreviewStore = create<PreviewStore>((set, get) => {
         .map((t) => ({
           path: t.path,
           permanent: Boolean(t.permanent),
-          mode: t.mode === "diff" ? ("diff" as const) : ("current" as const),
+          // Unknown mode strings from older builds fall back rather than break.
+          mode: isPreviewMode(t.mode) ? t.mode : ("current" as const),
         }));
 
       const activePath =

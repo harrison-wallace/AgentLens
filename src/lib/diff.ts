@@ -128,9 +128,13 @@ export function truncateDisplay(display: DiffDisplayRow[], max: number): Truncat
 export function diffUnavailableReason(diff: SessionDiff): string | null {
   switch (diff.unavailable) {
     case "notARepository":
-      return "Diff since session needs a git repository — the baseline comes from git.";
+      return "This comparison needs a git repository — the baseline comes from git.";
     case "notTracked":
-      return "Git ignores this file, so there is no session baseline to compare against.";
+      return "This file isn't tracked by git, so there is nothing to compare against.";
+    case "notText":
+      return "Binary file — no line diff to show.";
+    case "tooLarge":
+      return "File is too large to diff.";
     case null:
       break;
   }

@@ -14,6 +14,7 @@ const backend = {
     daemonCommand: "agentlens-daemon",
     autoInstallDaemon: true,
     feedMaxEntries: 250,
+    checkForUpdates: true,
   } as AppSettings,
 };
 
@@ -59,6 +60,7 @@ describe("settingsStore", () => {
       daemonCommand: "agentlens-daemon",
       autoInstallDaemon: true,
       feedMaxEntries: 250,
+      checkForUpdates: true,
     };
     useSettingsStore.setState({
       settings: { extraIgnores: [], showIgnored: false, pinned: [] },
@@ -68,6 +70,7 @@ describe("settingsStore", () => {
         daemonCommand: "agentlens-daemon",
         autoInstallDaemon: true,
         feedMaxEntries: 250,
+        checkForUpdates: true,
       },
       pins: [],
       error: null,
@@ -102,6 +105,7 @@ describe("settingsStore", () => {
       daemonCommand: "agentlens-daemon",
       autoInstallDaemon: true,
       feedMaxEntries: 250,
+      checkForUpdates: true,
     });
     // The workspace write must not have carried the app setting with it.
     expect(backend.workspace.pinned).toEqual(["notes.md"]);

@@ -5,6 +5,7 @@ import {
   MAX_PREVIEW_FONT_SIZE,
   MIN_PREVIEW_FONT_SIZE,
   useAppearanceStore,
+  type ThemeMode,
 } from "../stores/appearanceStore";
 import { useConnectionStore } from "../stores/connectionStore";
 import { useSettingsStore } from "../stores/settingsStore";
@@ -30,6 +31,7 @@ export default function SettingsPanel() {
   const toggleShowIgnored = useSettingsStore((s) => s.toggleShowIgnored);
   const toggleShowAgentContext = useSettingsStore((s) => s.toggleShowAgentContext);
   const toggleAutoInstallDaemon = useSettingsStore((s) => s.toggleAutoInstallDaemon);
+  const toggleCheckForUpdates = useSettingsStore((s) => s.toggleCheckForUpdates);
   const setFeedMaxEntries = useSettingsStore((s) => s.setFeedMaxEntries);
 
   // Esc closes; there is nothing to lose by closing, since every control here
@@ -105,6 +107,14 @@ export default function SettingsPanel() {
             disabled={saving}
             onChange={() => void toggleShowAgentContext()}
           />
+          <Toggle
+            label="Check for updates"
+            description="Look for a newer release on GitHub at startup. Notify only — nothing is downloaded or installed."
+            checked={app.checkForUpdates}
+            disabled={saving}
+            onChange={() => void toggleCheckForUpdates()}
+          />
+          <ThemePicker />
           <UiZoom />
           <PreviewFontSize />
           <FeedMaxEntries
@@ -239,6 +249,44 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       <h3 className="section-label pb-2">{title}</h3>
       <div className="flex flex-col gap-3">{children}</div>
     </section>
+  );
+}
+
+const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
+  { value: "system", label: "System" },
+  { value: "dark", label: "Dark" },
+  { value: "light", label: "Light" },
+];
+
+/** Colour scheme. Segmented like the zoom stops so it does not invent a control. */
+function ThemePicker() {
+  const theme = useAppearanceStore((s) => s.theme);
+  const setTheme = useAppearanceStore((s) => s.setTheme);
+
+  return (
+    <div>
+      <span className="block text-xs font-medium text-text">Theme</span>
+      <p className="text-xs text-text-muted">
+        Dark by default. System follows the OS light/dark preference, including the title bar.
+      </p>
+      <div className="mt-1.5 flex items-center gap-1">
+        {THEME_OPTIONS.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            onClick={() => setTheme(option.value)}
+            aria-pressed={theme === option.value}
+            className={`h-8 rounded border px-2.5 text-xs ${
+              theme === option.value
+                ? "border-accent text-accent"
+                : "border-border text-text-muted hover:bg-hover hover:text-text"
+            }`}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
 

@@ -8,20 +8,23 @@ const textPayload = (path: string): PreviewPayload => ({
   language: "typescript",
 });
 
-const emptyDiff = (path: string): SessionDiff => ({
+const emptyDiff = (path: string, tag = ""): SessionDiff => ({
   path,
-  baseline: "",
-  current: "",
+  baseline: tag,
+  current: tag,
   unavailable: null,
 });
 
 vi.mock("../lib/tauri", () => ({
   readPreview: vi.fn(async (path: string) => textPayload(path)),
-  sessionDiff: vi.fn(async (path: string) => emptyDiff(path)),
+  sessionDiff: vi.fn(async (path: string) => emptyDiff(path, "session")),
+  gitDiff: vi.fn(async (path: string, staged: boolean) =>
+    emptyDiff(path, staged ? "staged" : "working"),
+  ),
 }));
 
 const { usePreviewStore, MAX_OPEN_TABS } = await import("./previewStore");
-const { readPreview, sessionDiff } = await import("../lib/tauri");
+const { readPreview, sessionDiff, gitDiff } = await import("../lib/tauri");
 
 /** Minimal localStorage so persistence tests run under node. */
 function installMemoryStorage() {
@@ -100,7 +103,30 @@ describe("previewStore tabs", () => {
     await usePreviewStore.getState().setMode("diff");
     expect(usePreviewStore.getState().tabs[0]?.mode).toBe("diff");
     expect(vi.mocked(sessionDiff)).toHaveBeenCalledWith("a.ts");
-    expect(usePreviewStore.getState().diff).toEqual(emptyDiff("a.ts"));
+    expect(usePreviewStore.getState().diff).toEqual(emptyDiff("a.ts", "session"));
+  });
+
+  it("caches the three diff modes independently for the same path", async () => {
+    await usePreviewStore.getState().openPermanent("a.ts");
+    await usePreviewStore.getState().setMode("diff");
+    await usePreviewStore.getState().setMode("gitWorking");
+    await usePreviewStore.getState().setMode("gitStaged");
+
+    expect(vi.mocked(sessionDiff)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(gitDiff)).toHaveBeenCalledWith("a.ts", false);
+    expect(vi.mocked(gitDiff)).toHaveBeenCalledWith("a.ts", true);
+    expect(usePreviewStore.getState().diff).toEqual(emptyDiff("a.ts", "staged"));
+
+    vi.mocked(sessionDiff).mockClear();
+    vi.mocked(gitDiff).mockClear();
+
+    await usePreviewStore.getState().setMode("diff");
+    expect(vi.mocked(sessionDiff)).not.toHaveBeenCalled();
+    expect(usePreviewStore.getState().diff).toEqual(emptyDiff("a.ts", "session"));
+
+    await usePreviewStore.getState().setMode("gitWorking");
+    expect(vi.mocked(gitDiff)).not.toHaveBeenCalled();
+    expect(usePreviewStore.getState().diff).toEqual(emptyDiff("a.ts", "working"));
   });
 
   it("caches content so reactivating does not re-fetch", async () => {
@@ -125,6 +151,20 @@ describe("previewStore tabs", () => {
     expect(state.tabs.map((t) => t.path)).toEqual(["src/a.ts", "src/b.ts"]);
     expect(state.activePath).toBe("src/b.ts");
     expect(state.tabs.find((t) => t.path === "src/b.ts")?.mode).toBe("diff");
+  });
+
+  it("falls back unknown persisted modes to current", async () => {
+    localStorage.setItem(
+      "agentlens.open-tabs",
+      JSON.stringify({
+        "/proj": {
+          tabs: [{ path: "a.ts", permanent: true, mode: "legacyMode" }],
+          active: "a.ts",
+        },
+      }),
+    );
+    await usePreviewStore.getState().bindWorkspace("/proj");
+    expect(usePreviewStore.getState().tabs[0]?.mode).toBe("current");
   });
 
   it("keeps separate tab sets for the same root on different machines", async () => {

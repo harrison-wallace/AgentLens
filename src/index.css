@@ -53,6 +53,44 @@
   --font-sans: var(--font-mono);
 }
 
+/* Light ramp. The dark values above stay the default; this only overrides.
+   Warm near-white to mirror the warm near-black, with the same semantic
+   accents so nothing else in the app has to know which theme is on. */
+:root[data-theme="light"] {
+  --color-surface: #fbfaf9;
+  --color-bg: #fbfaf9;
+  --color-surface-raised: #f2efed;
+  --color-surface-overlay: #e9e5e2;
+  --color-border: rgb(15 14 14 / 0.1);
+  --color-border-strong: rgb(15 14 14 / 0.18);
+
+  --color-text: #1b1919;
+  --color-text-body: #3a3636;
+  --color-text-muted: #6f6a6a;
+  --color-text-ash: #8f8a8a;
+  --color-on-accent: #ffffff;
+
+  --color-accent: #0064d2;
+  --color-accent-hover: #004a9e;
+  --color-danger: #d13b30;
+  --color-warning: #b8730a;
+  --color-success: #1e8e3e;
+  --color-glow: #0064d2;
+
+  --color-hover: #eceae8;
+  --color-selected: #e2dedb;
+
+  --color-git-added: #1e8e3e;
+  --color-git-modified: #b8730a;
+  --color-git-deleted: #d13b30;
+  --color-git-renamed: #0b7285;
+  --color-git-untracked: #8a3ab0;
+  --color-git-conflicted: #b8730a;
+
+  --color-diff-added: rgb(30 142 62 / 0.12);
+  --color-diff-removed: rgb(209 59 48 / 0.12);
+}
+
 /* Preview body text. A variable rather than a token because it is a user
    setting, rewritten at runtime by the appearance store; the chrome around it
    keeps the fixed DESIGN.md ladder and moves only with the webview zoom. */
@@ -118,8 +156,21 @@ body {
   color: var(--color-text-muted);
 }
 
-/* Shiki emits its own inline theme colours; only the box is ours. Wrapping is
-   off so long lines scroll rather than reflow and break the column feel. */
+/* Shiki emits both ramps as custom properties rather than a baked-in colour,
+   so switching theme is these two rules instead of re-highlighting every open
+   file. */
+.shiki-body .shiki,
+.shiki-body .shiki span {
+  color: var(--shiki-dark);
+}
+
+:root[data-theme="light"] .shiki-body .shiki,
+:root[data-theme="light"] .shiki-body .shiki span {
+  color: var(--shiki-light);
+}
+
+/* Only the box is ours. Wrapping is off so long lines scroll rather than
+   reflow and break the column feel. */
 .shiki-body pre {
   margin: 0;
   padding: 0.5rem;

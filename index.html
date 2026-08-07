@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -11,6 +11,35 @@
         background: #0f0e0e;
       }
     </style>
+    <!-- Store is the authority; this only prevents a dark flash before it mounts. -->
+    <script>
+      (function () {
+        try {
+          var raw = localStorage.getItem("agentlens.appearance");
+          var theme = "dark";
+          if (raw) {
+            var parsed = JSON.parse(raw);
+            var t = parsed && parsed.theme;
+            if (t === "light" || t === "dark" || t === "system") theme = t;
+          }
+          var resolved = theme;
+          if (theme === "system") {
+            resolved =
+              window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches
+                ? "light"
+                : "dark";
+          }
+          if (resolved !== "light" && resolved !== "dark") resolved = "dark";
+          document.documentElement.dataset.theme = resolved;
+          document.documentElement.style.background = resolved === "light" ? "#fbfaf9" : "#0f0e0e";
+          document.documentElement.style.colorScheme = resolved;
+        } catch (e) {
+          document.documentElement.dataset.theme = "dark";
+          document.documentElement.style.background = "#0f0e0e";
+          document.documentElement.style.colorScheme = "dark";
+        }
+      })();
+    </script>
   </head>
 
   <body>

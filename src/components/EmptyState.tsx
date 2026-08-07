@@ -39,6 +39,9 @@ export default function EmptyState() {
       <div className="flex w-80 flex-col items-center text-center">
         <img src={logo} alt="" aria-hidden className="mb-3 h-16 w-16" />
         <p className="text-[22px] font-semibold tracking-wide text-text">AgentLens</p>
+        <p className="mt-1.5 text-[11px] text-text-muted">
+          A read-only window into what your coding agent is doing.
+        </p>
         {version && <p className="mt-1 text-[11px] text-text-muted">v{version}</p>}
 
         <button
@@ -72,6 +75,20 @@ export default function EmptyState() {
             </ul>
           </div>
         )}
+
+        <button
+          type="button"
+          onClick={() => {
+            void import("@tauri-apps/plugin-opener")
+              .then(({ openUrl }) => openUrl("https://github.com/harrison-wallace/AgentLens"))
+              .catch(() => {
+                // A dead link must not throw.
+              });
+          }}
+          className="mt-8 text-[11px] text-text-muted hover:text-text"
+        >
+          Docs & releases →
+        </button>
       </div>
     </div>
   );

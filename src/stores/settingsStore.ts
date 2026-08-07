@@ -10,6 +10,7 @@ import {
 import { clampFeedMaxEntries, DEFAULT_FEED_MAX_ENTRIES } from "../lib/feed";
 import type { AgentRootInfo, AppSettings, PinnedEntry, WorkspaceSettings } from "../lib/protocol";
 import { useFeedStore } from "./feedStore";
+import { useToastStore } from "./toastStore";
 import { useTreeStore } from "./treeStore";
 
 function toErrorMessage(err: unknown): string {
@@ -24,6 +25,7 @@ const EMPTY_APP: AppSettings = {
   daemonCommand: "agentlens-daemon",
   autoInstallDaemon: true,
   feedMaxEntries: DEFAULT_FEED_MAX_ENTRIES,
+  checkForUpdates: true,
 };
 
 /** Normalize app settings from disk (older stores may omit new fields). */
@@ -64,6 +66,8 @@ interface SettingsStore {
   setDaemonCommand: (command: string) => Promise<boolean>;
   /** Flips whether a remote without a daemon gets one installed for it. */
   toggleAutoInstallDaemon: () => Promise<boolean>;
+  /** Flips the startup release check (notify-only). */
+  toggleCheckForUpdates: () => Promise<boolean>;
   /** How many activity-feed batches to keep (oldest drop). App-wide. */
   setFeedMaxEntries: (max: number) => Promise<boolean>;
   /** Pins `path` if it isn't already, unpins it if it is. */
@@ -110,7 +114,11 @@ async function persist(
     try {
       set({ ...(await write()), saving: false });
     } catch (err) {
-      set({ saving: false, error: toErrorMessage(err) });
+      const message = toErrorMessage(err);
+      set({ saving: false, error: message });
+      // Pin toggles and other saves can fail with the settings panel closed;
+      // the panel's inline alert only helps while it is open.
+      useToastStore.getState().push("Couldn't save settings", message);
       return false;
     }
     await useSettingsStore.getState().refreshPins();
@@ -219,6 +227,16 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       ),
     })),
 
+  toggleCheckForUpdates: async () =>
+    persist(set, async () => ({
+      app: normalizeApp(
+        await setAppSettings({
+          ...get().app,
+          checkForUpdates: !get().app.checkForUpdates,
+        }),
+      ),
+    })),
+
   // Presentation-only: no tree reload. Trim the live feed immediately so a
   // lower cap takes effect without waiting for the next batch.
   setFeedMaxEntries: async (max) =>
@@ -231,7 +249,9 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         useFeedStore.getState().setMaxEntries(app.feedMaxEntries);
         return true;
       } catch (err) {
-        set({ saving: false, error: toErrorMessage(err) });
+        const message = toErrorMessage(err);
+        set({ saving: false, error: message });
+        useToastStore.getState().push("Couldn't save settings", message);
         return false;
       }
     }),

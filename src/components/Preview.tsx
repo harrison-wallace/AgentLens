@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import PreviewTabs from "./PreviewTabs";
-import { usePreviewStore, type PreviewMode } from "../stores/previewStore";
+import { usePreviewStore, type DiffMode, type PreviewMode } from "../stores/previewStore";
+import { useGitStore } from "../stores/gitStore";
 import {
   collapseContext,
   diffUnavailableReason,
@@ -18,6 +19,17 @@ import type { PreviewPayload, SessionDiff } from "../lib/protocol";
 /** Unchanged lines kept either side of a change in the diff view. */
 const DIFF_CONTEXT_LINES = 3;
 
+function emptyDiffMessage(mode: DiffMode): string {
+  switch (mode) {
+    case "diff":
+      return "No changes since the session started.";
+    case "gitWorking":
+      return "No changes against HEAD.";
+    case "gitStaged":
+      return "Nothing staged for this file.";
+  }
+}
+
 export default function Preview() {
   const activePath = usePreviewStore((s) => s.activePath);
   const tabs = usePreviewStore((s) => s.tabs);
@@ -26,8 +38,10 @@ export default function Preview() {
   const loading = usePreviewStore((s) => s.loading);
   const error = usePreviewStore((s) => s.error);
   const setMode = usePreviewStore((s) => s.setMode);
+  const canUseGit = useGitStore((s) => s.capabilities?.canMutate === true);
 
   const mode: PreviewMode = tabs.find((t) => t.path === activePath)?.mode ?? "current";
+  const isDiffMode = mode !== "current";
 
   if (!activePath) {
     return (
@@ -47,6 +61,16 @@ export default function Preview() {
         <ModeButton active={mode === "diff"} onClick={() => void setMode("diff")}>
           Diff since session
         </ModeButton>
+        {canUseGit && (
+          <>
+            <ModeButton active={mode === "gitWorking"} onClick={() => void setMode("gitWorking")}>
+              Diff vs HEAD
+            </ModeButton>
+            <ModeButton active={mode === "gitStaged"} onClick={() => void setMode("gitStaged")}>
+              Staged vs HEAD
+            </ModeButton>
+          </>
+        )}
         <span
           className="mx-2 min-w-0 flex-1 truncate text-[11px] text-text-muted"
           title={activePath}
@@ -60,7 +84,9 @@ export default function Preview() {
         {error && <p className="p-4 text-xs text-danger">{error}</p>}
         {!error && loading && <p className="p-4 text-xs text-text-muted">Loading…</p>}
         {!error && !loading && mode === "current" && payload && <CurrentView payload={payload} />}
-        {!error && !loading && mode === "diff" && diff && <DiffView diff={diff} />}
+        {!error && !loading && isDiffMode && diff && (
+          <DiffView diff={diff} emptyMessage={emptyDiffMessage(mode)} />
+        )}
       </div>
     </div>
   );
@@ -188,7 +214,7 @@ function TextPreview({ text, language }: { text: string; language: string }) {
   );
 }
 
-function DiffView({ diff }: { diff: SessionDiff }) {
+function DiffView({ diff, emptyMessage }: { diff: SessionDiff; emptyMessage: string }) {
   const rows = useMemo(() => toDiffRows(diff.baseline, diff.current), [diff]);
   const { display, truncated } = useMemo(
     () => truncateDisplay(collapseContext(rows, DIFF_CONTEXT_LINES), MAX_DIFF_ROWS),
@@ -200,7 +226,7 @@ function DiffView({ diff }: { diff: SessionDiff }) {
   if (reason) return <p className="p-4 text-xs text-text-muted">{reason}</p>;
 
   if (summary.added === 0 && summary.removed === 0) {
-    return <p className="p-4 text-xs text-text-muted">No changes since the session started.</p>;
+    return <p className="p-4 text-xs text-text-muted">{emptyMessage}</p>;
   }
 
   return (

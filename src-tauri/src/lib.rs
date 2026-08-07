@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use agentlens_core::protocol::{
     self, AppSettings, Command, CommandResult, ConnectionInfo, ConnectionTarget, SessionRef,
-    WorkspaceInfo, WorkspaceSettings, EVENT_CONNECTION,
+    UpdateCheck, WorkspaceInfo, WorkspaceSettings, EVENT_CONNECTION,
 };
 use backend::child::ChildProcess;
 use backend::{Backend, BackendState, InProcess};
@@ -54,6 +54,117 @@ fn get_app_info() -> protocol::AppInfo {
     protocol::AppInfo {
         name: "AgentLens".into(),
         version: env!("CARGO_PKG_VERSION").into(),
+    }
+}
+
+/// Notify-only GitHub release check. Every failure is a quiet non-event —
+/// offline, rate-limited, or unparseable all look the same as "already current".
+#[tauri::command]
+fn check_for_update() -> UpdateCheck {
+    let current = env!("CARGO_PKG_VERSION").to_string();
+    let quiet = || UpdateCheck {
+        current: current.clone(),
+        latest: None,
+        url: None,
+        newer: false,
+    };
+
+    let mut response =
+        match ureq::get("https://api.github.com/repos/harrison-wallace/AgentLens/releases/latest")
+            .header("User-Agent", &format!("AgentLens/{current}"))
+            .config()
+            .http_status_as_error(false)
+            .timeout_global(Some(std::time::Duration::from_secs(5)))
+            .build()
+            .call()
+        {
+            Ok(r) => r,
+            Err(_) => return quiet(),
+        };
+
+    if response.status() != 200 {
+        return quiet();
+    }
+
+    let body: serde_json::Value = match response.body_mut().read_json() {
+        Ok(v) => v,
+        Err(_) => return quiet(),
+    };
+
+    // Drafts and prereleases are not something to nag about.
+    if body.get("draft").and_then(|v| v.as_bool()) == Some(true)
+        || body.get("prerelease").and_then(|v| v.as_bool()) == Some(true)
+    {
+        return quiet();
+    }
+
+    let tag = match body.get("tag_name").and_then(|v| v.as_str()) {
+        Some(t) => t.trim().trim_start_matches('v').to_string(),
+        None => return quiet(),
+    };
+    if tag.is_empty() {
+        return quiet();
+    }
+
+    let url = body
+        .get("html_url")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let newer = is_newer(&current, &tag);
+    UpdateCheck {
+        current,
+        latest: Some(tag),
+        url,
+        newer,
+    }
+}
+
+/// Numeric `x.y.z` comparison after stripping a leading `v`. Anything that
+/// does not parse three components is not considered newer.
+fn is_newer(current: &str, latest: &str) -> bool {
+    fn parts(v: &str) -> Option<[u64; 3]> {
+        let trimmed = v.trim().trim_start_matches('v');
+        let mut nums = [0u64; 3];
+        let segs: Vec<&str> = trimmed.split('.').collect();
+        if segs.len() != 3 {
+            return None;
+        }
+        for (i, seg) in segs.iter().enumerate() {
+            nums[i] = seg.parse().ok()?;
+        }
+        Some(nums)
+    }
+    match (parts(current), parts(latest)) {
+        (Some(c), Some(l)) => l > c,
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod update_check_tests {
+    use super::is_newer;
+
+    #[test]
+    fn newer_minor() {
+        assert!(is_newer("0.5.1", "0.6.0"));
+    }
+
+    #[test]
+    fn same_version_is_not_newer() {
+        assert!(!is_newer("0.5.1", "0.5.1"));
+    }
+
+    #[test]
+    fn older_is_not_newer_numerically() {
+        // String compare would call "0.5.9" > "0.6.0" — numeric must not.
+        assert!(!is_newer("0.6.0", "0.5.9"));
+    }
+
+    #[test]
+    fn garbage_tag_is_not_newer() {
+        assert!(!is_newer("0.5.1", "not-a-version"));
+        assert!(!is_newer("0.5.1", "v1.2"));
     }
 }
 
@@ -214,6 +325,11 @@ fn session_diff(path: String, state: State<BackendState>) -> CommandResult<Value
 }
 
 #[tauri::command]
+fn git_diff(path: String, staged: bool, state: State<BackendState>) -> CommandResult<Value> {
+    send(&state, Command::GitDiff { path, staged })
+}
+
+#[tauri::command]
 fn restart_session(state: State<BackendState>) -> CommandResult<Value> {
     send(&state, Command::RestartSession)
 }
@@ -350,11 +466,14 @@ fn connect_to(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Window geometry first so the saved size/position lands before show.
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             get_app_info,
+            check_for_update,
             open_workspace,
             close_workspace,
             current_workspace,
@@ -376,6 +495,7 @@ pub fn run() {
             read_preview,
             open_externally,
             session_diff,
+            git_diff,
             restart_session,
             workspace_settings,
             set_workspace_settings,

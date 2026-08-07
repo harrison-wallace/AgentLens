@@ -9,6 +9,7 @@ import {
 } from "../lib/tauri";
 import type { WorkspaceInfo } from "../lib/protocol";
 import { useConnectionStore } from "./connectionStore";
+import { useToastStore } from "./toastStore";
 
 interface WorkspaceStore {
   workspace: WorkspaceInfo | null;
@@ -45,6 +46,9 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
   opening: false,
 
   open: async (path) => {
+    // Empty-state already renders `error` inline; toast only when that
+    // screen is not the one the user is looking at.
+    const hadWorkspace = get().workspace !== null;
     set({ opening: true, error: null });
     try {
       const workspace = await openWorkspace(path);
@@ -54,7 +58,11 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
       await useConnectionStore.getState().refresh();
       await get().loadRecent();
     } catch (err) {
-      set({ error: toErrorMessage(err), opening: false });
+      const message = toErrorMessage(err);
+      set({ error: message, opening: false });
+      if (hadWorkspace) {
+        useToastStore.getState().push("Couldn't open workspace", message);
+      }
       await useConnectionStore.getState().refresh();
       // Opening elsewhere replaces the backend, which closes whatever the
       // previous one had open — so a failure part-way through can leave this

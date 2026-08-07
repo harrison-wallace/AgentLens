@@ -6,7 +6,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/harrison-wallace/AgentLens/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/harrison-wallace/AgentLens/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/actions/workflow/status/harrison-wallace/AgentLens/release.yml?style=flat-square&label=release)](https://github.com/harrison-wallace/AgentLens/actions/workflows/release.yml)
-[![Version](https://img.shields.io/badge/version-0.5.1-6366f1?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.6.0-6366f1?style=flat-square)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 
 [![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app)
@@ -20,7 +20,7 @@ read-only window into what your terminal coding agent (Claude Code, opencode,
 …) is doing to a directory: live file tree, change feed, git status,
 read-only previews. Runs on Windows and Ubuntu.
 
-**Status:** v0.5.1 — the MVP feature set is complete, including remote
+**Status:** v0.6.0 — the MVP feature set is complete, including remote
 workspaces over WSL and SSH with no manual setup on the remote machine. Still
 pre-alpha: acceptance testing on Windows and Ubuntu is outstanding.
 
@@ -36,8 +36,10 @@ pre-alpha: acceptance testing on Windows and Ubuntu is outstanding.
   bar.
 - **Read-only preview** — syntax-highlighted code, images, rendered markdown,
   with a size guard and an "open externally" escape hatch.
-- **Diff since session** — what changed in a file since you started watching,
-  not merely since the last commit.
+- **Three diff sources, one view** — what changed in a file since you started
+  watching, against `HEAD`, or staged against `HEAD`. Hunks collapse, large
+  diffs are capped, and binary or untracked files say so rather than showing
+  nonsense.
 - **Agent context files always visible** — `AGENTS.md`, `CLAUDE.md` and
   friends are surfaced and marked even when `.gitignore` hides them, because
   they are what the agent is being told to do.
@@ -58,9 +60,17 @@ pre-alpha: acceptance testing on Windows and Ubuntu is outstanding.
   keeps it; feed / git / `Ctrl+P` jumps open permanent tabs. `Ctrl+Tab` /
   `Ctrl+Shift+Tab` cycle, `Ctrl+W` closes, middle-click closes a tab. Open set
   is remembered per workspace; tree rows show a dot when open.
+- **Command palette** — `Ctrl+Shift+P` runs any command from one registry;
+  `F1` (or `Ctrl+/`) lists every shortcut, generated from that same registry
+  so it can never drift from what the keys actually do.
+- **Light theme** — dark by default, or follow the OS, switched from Settings.
 - **`Ctrl+P` file jump**, **`F11` fullscreen**, **`Ctrl` `+`/`−`/`0` zoom**
   (with an independent preview text size), arrow-key tree navigation,
   resizable and collapsible panels, and per-workspace extra ignore globs.
+- **Quiet by design** — errors arrive as dismissible toasts with a copyable
+  detail drawer, never a modal dialog; the window remembers its size and
+  position; and a notify-only release check tells you a new version exists
+  without ever downloading anything (switch it off in Settings).
 
 ## Why not VS Code / a file explorer
 

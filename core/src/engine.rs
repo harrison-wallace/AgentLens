@@ -127,6 +127,10 @@ impl Engine {
                 let ws = workspace::current(&self.workspace)?;
                 ok(snapshots::diff(&self.session, &ws.root, &path)?)
             }
+            Command::GitDiff { path, staged } => {
+                let ws = workspace::current(&self.workspace)?;
+                ok(gitops::file_diff(&ws.root, &path, staged)?)
+            }
 
             Command::GitStatus => {
                 let ws = workspace::current(&self.workspace)?;

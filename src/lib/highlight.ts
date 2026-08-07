@@ -13,7 +13,12 @@
  */
 import type { HighlighterCore } from "shiki/core";
 
-const THEME = "github-dark-default";
+/**
+ * Both ramps are loaded and emitted at once as CSS custom properties, so
+ * switching theme is a selector in `index.css` rather than re-highlighting
+ * every open file — Shiki's cost is in the tokenizing, not the styling.
+ */
+const THEMES = { light: "github-light-default", dark: "github-dark-default" } as const;
 
 /**
  * Languages available to the preview, mapped to their grammar chunk. A file
@@ -66,15 +71,15 @@ function isSupported(language: string): language is SupportedLanguage {
 async function getHighlighter(): Promise<HighlighterCore> {
   if (!highlighterPromise) {
     highlighterPromise = (async () => {
-      const [{ createHighlighterCore }, { createJavaScriptRegexEngine }, theme] = await Promise.all(
-        [
+      const [{ createHighlighterCore }, { createJavaScriptRegexEngine }, dark, light] =
+        await Promise.all([
           import("shiki/core"),
           import("shiki/engine/javascript"),
           import("@shikijs/themes/github-dark-default"),
-        ],
-      );
+          import("@shikijs/themes/github-light-default"),
+        ]);
       return createHighlighterCore({
-        themes: [theme.default],
+        themes: [dark.default, light.default],
         langs: [],
         // Skip regex constructs the JS engine can't express instead of
         // throwing; worst case a few tokens go uncoloured.
@@ -99,7 +104,13 @@ export async function highlightToHtml(code: string, language: string): Promise<s
       await highlighter.loadLanguage(grammar.default);
       loaded.add(language);
     }
-    return highlighter.codeToHtml(code, { lang: language, theme: THEME });
+    // `defaultColor: false` emits `--shiki-light` / `--shiki-dark` instead of
+    // baking one ramp into `color:`; index.css picks the side.
+    return highlighter.codeToHtml(code, {
+      lang: language,
+      themes: THEMES,
+      defaultColor: false,
+    });
   } catch {
     return null;
   }

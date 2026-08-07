@@ -172,15 +172,15 @@ export type PreviewPayload =
   | { kind: "binary"; path: string; size: number }
   | { kind: "tooLarge"; path: string; size: number };
 
-/** Why a "diff since session" can't be produced. */
-export type DiffUnavailable = "notARepository" | "notTracked";
+/** Why a file comparison (session or git) can't be produced. */
+export type DiffUnavailable = "notARepository" | "notTracked" | "notText" | "tooLarge";
 
-/** The two sides of a "diff since session" comparison. */
+/** The two sides of a file comparison — session or git. */
 export interface SessionDiff {
   path: string;
-  /** Content when the session started; `null` if the file didn't exist. */
+  /** Left-hand content; `null` if the file didn't exist on that side. */
   baseline: string | null;
-  /** Content now; `null` if the file has since been deleted. */
+  /** Right-hand content; `null` if the file is absent on that side. */
   current: string | null;
   /** Set when no meaningful comparison exists; null means the diff is usable. */
   unavailable: DiffUnavailable | null;
@@ -221,6 +221,26 @@ export interface AppSettings {
    * Presentation only — the backend ignores this.
    */
   feedMaxEntries: number;
+  /**
+   * Check GitHub for a newer release at startup. Notify-only — nothing is
+   * ever downloaded or installed.
+   */
+  checkForUpdates: boolean;
+}
+
+/** Result of a notify-only release check. */
+export interface UpdateCheck {
+  /** The running version. */
+  current: string;
+  /**
+   * Newest published release tag, without the leading `v`; `null` when the
+   * check was skipped, failed, or found nothing.
+   */
+  latest: string | null;
+  /** Where to read about it. */
+  url: string | null;
+  /** True only when `latest` is strictly newer than `current`. */
+  newer: boolean;
 }
 
 /** Which coding agent a session belongs to. */

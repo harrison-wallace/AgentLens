@@ -15,6 +15,7 @@ import type {
   PreviewPayload,
   SessionDiff,
   SessionRef,
+  UpdateCheck,
   WatcherStatus,
   WorkspaceInfo,
   WorkspaceSettings,
@@ -22,6 +23,11 @@ import type {
 
 export function getAppInfo(): Promise<AppInfo> {
   return invoke<AppInfo>("get_app_info");
+}
+
+/** Notify-only GitHub release check. Failures are silent non-events. */
+export function checkForUpdate(): Promise<UpdateCheck> {
+  return invoke<UpdateCheck>("check_for_update");
 }
 
 /**
@@ -155,6 +161,10 @@ export function openExternally(path: string): Promise<void> {
 
 export function sessionDiff(path: string): Promise<SessionDiff> {
   return invoke<SessionDiff>("session_diff", { path });
+}
+
+export function gitDiff(path: string, staged: boolean): Promise<SessionDiff> {
+  return invoke<SessionDiff>("git_diff", { path, staged });
 }
 
 /** Reset "since when" for highlights and diffs, keeping the workspace open. */

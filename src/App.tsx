@@ -6,12 +6,15 @@ import FileTree from "./components/FileTree";
 import GitPanel from "./components/GitPanel";
 import Preview from "./components/Preview";
 import SettingsPanel from "./components/SettingsPanel";
+import ShortcutsHelp from "./components/ShortcutsHelp";
 import Splitter from "./components/Splitter";
 import StatusBar from "./components/StatusBar";
+import Toasts from "./components/Toasts";
 import WorkspaceHeader from "./components/WorkspaceHeader";
 import { onConnection, onFsChanges, onGitStatus, onWatcherStatus } from "./lib/events";
 import { formatLocation } from "./lib/location";
 import { quickPickOpen } from "./lib/quickPick";
+import { checkForUpdate } from "./lib/tauri";
 import { useAppearanceStore } from "./stores/appearanceStore";
 import { useConnectionStore } from "./stores/connectionStore";
 import { useFeedStore } from "./stores/feedStore";
@@ -20,6 +23,8 @@ import { useLayoutStore } from "./stores/layoutStore";
 import { usePaletteStore } from "./stores/paletteStore";
 import { usePreviewStore } from "./stores/previewStore";
 import { useSettingsStore } from "./stores/settingsStore";
+import { useShortcutsStore } from "./stores/shortcutsStore";
+import { useToastStore } from "./stores/toastStore";
 import { useTreeStore } from "./stores/treeStore";
 import { useWatcherStore } from "./stores/watcherStore";
 import { useWorkspaceStore } from "./stores/workspaceStore";
@@ -59,7 +64,30 @@ export default function App() {
     void loadRecent();
     // App-level settings and the connection both outlive the workspace, so
     // they load once here rather than in the per-workspace effect below.
-    void useSettingsStore.getState().refreshApp();
+    void useSettingsStore
+      .getState()
+      .refreshApp()
+      .then(() => {
+        // Notify-only: fire once after settings land, and only when enabled.
+        // A failure or "already current" is silence — never a toast about a
+        // machine that is simply offline.
+        if (!useSettingsStore.getState().app.checkForUpdates) return;
+        void checkForUpdate()
+          .then((result) => {
+            if (!result.newer || !result.latest) return;
+            useToastStore
+              .getState()
+              .push(
+                `AgentLens ${result.latest} is available`,
+                undefined,
+                result.url ? { href: result.url, label: "View release" } : undefined,
+              );
+          })
+          .catch(() => {
+            // The command itself returns a quiet non-event on failure; this
+            // only covers invoke being unavailable (plain browser, tests).
+          });
+      });
     void useConnectionStore.getState().refresh();
     // The webview starts every launch at 100%, so a stored zoom has to be
     // re-applied rather than merely read.
@@ -117,8 +145,9 @@ export default function App() {
     };
   }, []);
 
-  // Global chrome keys: `Ctrl+P` file jump, `F11` native fullscreen,
-  // `Ctrl +/-/0` zoom, `Ctrl+W` close tab, `Ctrl+Tab` cycle tabs.
+  // Global chrome keys: `Ctrl+P` file jump, `Ctrl+Shift+P` command palette,
+  // `F1` / `Ctrl+/` shortcuts help, `F11` native fullscreen, `Ctrl +/-/0`
+  // zoom, `Ctrl+W` close tab, `Ctrl+Tab` cycle tabs.
   // Fullscreen is not free in a Tauri window the way it is in a browser tab —
   // the webview never owns the shell, so the app has to call the window API.
   // Zoom is handled here rather than by Tauri's `zoomHotkeysEnabled` polyfill,
@@ -133,6 +162,11 @@ export default function App() {
           const win = getCurrentWindow();
           await win.setFullscreen(!(await win.isFullscreen()));
         })();
+        return;
+      }
+      if (event.key === "F1") {
+        event.preventDefault();
+        useShortcutsStore.getState().show();
         return;
       }
       if (!(event.ctrlKey || event.metaKey)) return;
@@ -172,13 +206,25 @@ export default function App() {
         return;
       }
 
+      // Shortcuts help: `Ctrl+/` (and F1 above). Guarded like the other chrome
+      // keys — `Ctrl+/` is a comment shortcut elsewhere, and muscle memory in
+      // the commit box must not pop an overlay.
+      if (event.key === "/" || event.key === "?") {
+        if (isEditableKeyTarget(event.target)) return;
+        event.preventDefault();
+        useShortcutsStore.getState().show();
+        return;
+      }
+
       if (event.key.toLowerCase() !== "p") return;
       // Don't stack the palette on top of another modal, or re-open (and so
       // reset) the one already showing — including the branch picker, which
       // is the same widget.
       if (useSettingsStore.getState().open || quickPickOpen()) return;
       event.preventDefault();
-      void usePaletteStore.getState().show();
+      // Shift distinguishes the command palette from the file jump.
+      if (event.shiftKey) usePaletteStore.getState().showCommands();
+      else void usePaletteStore.getState().show();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -218,7 +264,12 @@ export default function App() {
   }, [tabsLocationKey]);
 
   if (!workspace) {
-    return <EmptyState />;
+    return (
+      <>
+        <EmptyState />
+        <Toasts />
+      </>
+    );
   }
 
   // Exactly one panel absorbs the leftover width. The preview takes it when
@@ -278,6 +329,8 @@ export default function App() {
       <StatusBar />
       <CommandPalette />
       <SettingsPanel />
+      <ShortcutsHelp />
+      <Toasts />
     </div>
   );
 }

@@ -18,7 +18,12 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use crate::paths::resolve_in_workspace;
-use crate::protocol::{BranchList, GitCapabilities};
+use crate::protocol::{BranchList, DiffUnavailable, GitCapabilities, SessionDiff};
+
+/// Ceiling for either side of a git diff, matching the session snapshot cap
+/// in `snapshots.rs`. Past this the pane says so rather than shipping a
+/// multi-megabyte string down a pipe to render two thousand rows of it.
+const MAX_DIFF_BYTES: u64 = 1024 * 1024;
 
 /// Output of one `git` invocation that exited zero.
 struct GitOutput {
@@ -199,6 +204,187 @@ pub fn stash_push(root: &Path, message: Option<&str>) -> Result<(), String> {
 /// Restore the most recent stash and drop it.
 pub fn stash_pop(root: &Path) -> Result<(), String> {
     run(root, &["stash", "pop"]).map(|_| ())
+}
+
+/// `HEAD` versus the working tree (`staged: false`) or the index (`staged: true`).
+///
+/// Returns a `SessionDiff` so the UI reuses the same line-diff path as the
+/// session comparison. Failures that are about the *file* (not a repo, not
+/// tracked, not text) land in `unavailable` rather than as an error, so the
+/// pane always has something to render.
+pub fn file_diff(root: &Path, path: &str, staged: bool) -> Result<SessionDiff, String> {
+    // Reject escapes before any git invocation sees the path.
+    let abs = resolve_in_workspace(root, path)?;
+
+    if run(root, &["rev-parse", "--git-dir"]).is_err() {
+        return Ok(unavailable(path, DiffUnavailable::NotARepository));
+    }
+
+    let baseline = match head_text(root, path)? {
+        Side::Missing => None,
+        Side::Text(s) => Some(s),
+        Side::NotText => return Ok(unavailable(path, DiffUnavailable::NotText)),
+        Side::TooLarge => return Ok(unavailable(path, DiffUnavailable::TooLarge)),
+    };
+
+    let current = if staged {
+        match index_text(root, path)? {
+            Side::Missing => None,
+            Side::Text(s) => Some(s),
+            Side::NotText => return Ok(unavailable(path, DiffUnavailable::NotText)),
+            Side::TooLarge => return Ok(unavailable(path, DiffUnavailable::TooLarge)),
+        }
+    } else {
+        match working_tree_text(&abs)? {
+            Side::Missing => None,
+            Side::Text(s) => Some(s),
+            Side::NotText => return Ok(unavailable(path, DiffUnavailable::NotText)),
+            Side::TooLarge => return Ok(unavailable(path, DiffUnavailable::TooLarge)),
+        }
+    };
+
+    if baseline.is_none() && current.is_none() {
+        return Ok(unavailable(path, DiffUnavailable::NotTracked));
+    }
+
+    // Working-tree mode can still surface disk content for a path git has
+    // never heard of. `git diff HEAD` skips those; refuse rather than paint
+    // an untracked file as a full add against empty.
+    if !staged && baseline.is_none() {
+        match index_text(root, path)? {
+            Side::Missing => return Ok(unavailable(path, DiffUnavailable::NotTracked)),
+            Side::NotText => return Ok(unavailable(path, DiffUnavailable::NotText)),
+            Side::TooLarge => return Ok(unavailable(path, DiffUnavailable::TooLarge)),
+            Side::Text(_) => {}
+        }
+    }
+
+    Ok(SessionDiff {
+        path: path.to_string(),
+        baseline,
+        current,
+        unavailable: None,
+    })
+}
+
+fn unavailable(path: &str, why: DiffUnavailable) -> SessionDiff {
+    SessionDiff {
+        path: path.to_string(),
+        baseline: None,
+        current: None,
+        unavailable: Some(why),
+    }
+}
+
+/// One side of a git file comparison.
+enum Side {
+    Missing,
+    Text(String),
+    NotText,
+    TooLarge,
+}
+
+/// Bytes of a successful `git` invocation, without lossy UTF-8 conversion.
+///
+/// `run` is fine for porcelain messages; blob contents must stay exact so a
+/// binary file is detected rather than rendered as mojibake.
+fn run_bytes(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => {
+                "git is not installed, or not on PATH — install it to enable git actions".into()
+            }
+            _ => format!("failed to run git: {e}"),
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        return Err(if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            format!("git {} failed", args.join(" "))
+        });
+    }
+
+    Ok(output.stdout)
+}
+
+/// Decode blob bytes: missing → `Missing`, non-UTF-8 → `NotText`.
+fn decode_blob(bytes: Vec<u8>) -> Side {
+    match String::from_utf8(bytes) {
+        Ok(text) => Side::Text(text),
+        Err(_) => Side::NotText,
+    }
+}
+
+/// Content of `path` at `HEAD`, or `Missing` when unborn / not in the tree.
+fn head_text(root: &Path, path: &str) -> Result<Side, String> {
+    // Unborn HEAD has no commits; treat like a brand-new file.
+    if run(root, &["rev-parse", "--verify", "HEAD"]).is_err() {
+        return Ok(Side::Missing);
+    }
+    // `rev:path` does not accept `--`. The path is already workspace-validated
+    // and cannot start with `-` as a free-standing flag because it is part of
+    // a single `HEAD:<path>` argument.
+    let rev_path = format!("HEAD:{path}");
+    match run(root, &["cat-file", "-s", &rev_path]) {
+        Ok(out) => {
+            let size: u64 = out.stdout.trim().parse().unwrap_or(0);
+            if size > MAX_DIFF_BYTES {
+                return Ok(Side::TooLarge);
+            }
+        }
+        Err(_) => return Ok(Side::Missing),
+    }
+    match run_bytes(root, &["show", &rev_path]) {
+        Ok(bytes) => Ok(decode_blob(bytes)),
+        Err(_) => Ok(Side::Missing),
+    }
+}
+
+/// Content of `path` in the index, or `Missing` when not staged.
+fn index_text(root: &Path, path: &str) -> Result<Side, String> {
+    // Same `rev:path` form as `head_text` — no `--`, path already validated.
+    let rev_path = format!(":{path}");
+    match run(root, &["cat-file", "-s", &rev_path]) {
+        Ok(out) => {
+            let size: u64 = out.stdout.trim().parse().unwrap_or(0);
+            if size > MAX_DIFF_BYTES {
+                return Ok(Side::TooLarge);
+            }
+        }
+        Err(_) => return Ok(Side::Missing),
+    }
+    match run_bytes(root, &["show", &rev_path]) {
+        Ok(bytes) => Ok(decode_blob(bytes)),
+        Err(_) => Ok(Side::Missing),
+    }
+}
+
+/// Working-tree bytes for an absolute path already resolved into the workspace.
+fn working_tree_text(abs: &Path) -> Result<Side, String> {
+    match abs.metadata() {
+        Ok(metadata) if metadata.len() > MAX_DIFF_BYTES => return Ok(Side::TooLarge),
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Side::Missing),
+        // A path that exists but isn't a readable file (directory, permission)
+        // is a real error — not a "deleted" side of a diff.
+        Err(e) => return Err(format!("failed to read file: {e}")),
+    }
+    // Same arms again rather than an `unwrap`: the file can go between the
+    // stat above and the read here.
+    match std::fs::read(abs) {
+        Ok(bytes) => Ok(decode_blob(bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Side::Missing),
+        Err(e) => Err(format!("failed to read file: {e}")),
+    }
 }
 
 #[cfg(test)]
@@ -416,5 +602,120 @@ mod tests {
 
         stage(root, &["-f".to_string()]).unwrap();
         assert!(porcelain(root).contains("-f"));
+    }
+
+    #[test]
+    fn file_diff_shows_unstaged_working_tree_against_head() {
+        let dir = repo();
+        let root = dir.path();
+        fs::write(root.join("first.txt"), "edited\n").unwrap();
+
+        let diff = file_diff(root, "first.txt", false).unwrap();
+        assert_eq!(diff.baseline.as_deref(), Some("one\n"));
+        assert_eq!(diff.current.as_deref(), Some("edited\n"));
+        assert_eq!(diff.unavailable, None);
+    }
+
+    #[test]
+    fn file_diff_staged_shows_index_content_as_current() {
+        let dir = repo();
+        let root = dir.path();
+        // Stage one edit, then change the working tree again so the three
+        // sides disagree — staged mode must report the index, not the disk.
+        fs::write(root.join("first.txt"), "staged\n").unwrap();
+        stage(root, &["first.txt".to_string()]).unwrap();
+        fs::write(root.join("first.txt"), "working\n").unwrap();
+
+        let diff = file_diff(root, "first.txt", true).unwrap();
+        assert_eq!(diff.baseline.as_deref(), Some("one\n"));
+        assert_eq!(diff.current.as_deref(), Some("staged\n"));
+        assert_eq!(diff.unavailable, None);
+    }
+
+    #[test]
+    fn file_diff_added_never_committed_has_no_baseline() {
+        let dir = repo();
+        let root = dir.path();
+        fs::write(root.join("brand-new.txt"), "new\n").unwrap();
+        stage(root, &["brand-new.txt".to_string()]).unwrap();
+
+        let diff = file_diff(root, "brand-new.txt", true).unwrap();
+        assert_eq!(diff.baseline, None);
+        assert_eq!(diff.current.as_deref(), Some("new\n"));
+        assert_eq!(diff.unavailable, None);
+    }
+
+    #[test]
+    fn file_diff_deleted_from_working_tree_has_no_current() {
+        let dir = repo();
+        let root = dir.path();
+        fs::remove_file(root.join("first.txt")).unwrap();
+
+        let diff = file_diff(root, "first.txt", false).unwrap();
+        assert_eq!(diff.baseline.as_deref(), Some("one\n"));
+        assert_eq!(diff.current, None);
+        assert_eq!(diff.unavailable, None);
+    }
+
+    #[test]
+    fn file_diff_untracked_is_not_tracked() {
+        let dir = repo();
+        let root = dir.path();
+        fs::write(root.join("loose.txt"), "loose\n").unwrap();
+
+        let diff = file_diff(root, "loose.txt", false).unwrap();
+        assert_eq!(diff.unavailable, Some(DiffUnavailable::NotTracked));
+    }
+
+    #[test]
+    fn file_diff_non_repository_is_unavailable() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+
+        let diff = file_diff(dir.path(), "a.txt", false).unwrap();
+        assert_eq!(diff.unavailable, Some(DiffUnavailable::NotARepository));
+    }
+
+    #[test]
+    fn file_diff_binary_working_tree_is_not_text() {
+        let dir = repo();
+        let root = dir.path();
+        fs::write(root.join("first.txt"), [0x00, 0xff, 0xfe]).unwrap();
+
+        let diff = file_diff(root, "first.txt", false).unwrap();
+        assert_eq!(diff.unavailable, Some(DiffUnavailable::NotText));
+    }
+
+    #[test]
+    fn file_diff_oversized_working_tree_is_too_large() {
+        let dir = repo();
+        let root = dir.path();
+        fs::write(
+            root.join("first.txt"),
+            "x".repeat(MAX_DIFF_BYTES as usize + 1),
+        )
+        .unwrap();
+
+        let diff = file_diff(root, "first.txt", false).unwrap();
+        assert_eq!(diff.unavailable, Some(DiffUnavailable::TooLarge));
+    }
+
+    #[test]
+    fn file_diff_oversized_head_blob_is_too_large() {
+        // Commit an oversized blob, then shrink the working tree so only the
+        // HEAD side is over the cap — proves `cat-file -s` gates the blob.
+        let dir = repo();
+        let root = dir.path();
+        fs::write(
+            root.join("first.txt"),
+            "x".repeat(MAX_DIFF_BYTES as usize + 1),
+        )
+        .unwrap();
+        stage(root, &["first.txt".to_string()]).unwrap();
+        commit(root, "oversized blob", false).unwrap();
+        fs::write(root.join("first.txt"), "small\n").unwrap();
+
+        let diff = file_diff(root, "first.txt", false).unwrap();
+        assert_eq!(diff.unavailable, Some(DiffUnavailable::TooLarge));
     }
 }

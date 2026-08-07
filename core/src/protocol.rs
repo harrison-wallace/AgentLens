@@ -245,27 +245,40 @@ pub enum PreviewPayload {
     TooLarge { path: String, size: u64 },
 }
 
-/// Why a "diff since session" can't be produced.
+/// Why a file comparison can't be produced.
+///
+/// Shared by session diffs and git diffs: both need a repository and a
+/// tracked text file on at least one side.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DiffUnavailable {
     /// The workspace isn't a git repository, and the baseline comes from git.
     NotARepository,
-    /// Git ignores this file, so it has no `HEAD` blob and never appears in
-    /// the status output the session baseline is captured from. Showing it as
-    /// wholly added would misrepresent a file that may well have existed.
+    /// The path has no blob on either side of the comparison — untracked and
+    /// absent from `HEAD`/the index, or git-ignored so it never appears in
+    /// the status the session baseline is captured from. Showing it as wholly
+    /// added would misrepresent a file that may well have existed.
     NotTracked,
+    /// The file isn't text on one side or the other, so a line diff would be
+    /// meaningless.
+    NotText,
+    /// One side is past the size ceiling for a comparison, so the diff would
+    /// cost more to ship than it could possibly be worth reading.
+    TooLarge,
 }
 
-/// The two sides of a "diff since session" comparison. The line diff itself
-/// is computed in the UI, which already has a diff library.
+/// The two sides of a file comparison — session baseline vs now, or `HEAD`
+/// vs working tree / index. The line diff itself is computed in the UI,
+/// which already has a diff library.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionDiff {
     pub path: String,
-    /// Content when the session started; `None` if the file didn't exist.
+    /// Left-hand content (`HEAD`, or the session-start snapshot); `None` if
+    /// the file didn't exist on that side.
     pub baseline: Option<String>,
-    /// Content now; `None` if the file has since been deleted.
+    /// Right-hand content (working tree, index, or now); `None` if the file
+    /// is absent on that side.
     pub current: Option<String>,
     /// Set when no meaningful comparison exists; `None` means the diff is
     /// usable.
@@ -331,6 +344,9 @@ pub struct AppSettings {
     /// number so older clients that never wrote the field still deserialize.
     #[serde(default = "default_feed_max_entries")]
     pub feed_max_entries: u32,
+    /// Check GitHub for a newer release at startup. Notify-only — nothing is
+    /// ever downloaded or installed.
+    pub check_for_updates: bool,
 }
 
 fn default_feed_max_entries() -> u32 {
@@ -345,8 +361,24 @@ impl Default for AppSettings {
             daemon_command: "agentlens-daemon".to_string(),
             auto_install_daemon: true,
             feed_max_entries: default_feed_max_entries(),
+            check_for_updates: true,
         }
     }
+}
+
+/// Result of a notify-only release check.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateCheck {
+    /// The running version.
+    pub current: String,
+    /// Newest published release tag, without the leading `v`; `None` when the
+    /// check was skipped, failed, or found nothing.
+    pub latest: Option<String>,
+    /// Where to read about it.
+    pub url: Option<String>,
+    /// True only when `latest` is strictly newer than `current`.
+    pub newer: bool,
 }
 
 /// Which coding agent a session belongs to. Providers are added behind the
@@ -498,6 +530,13 @@ pub enum Command {
     },
     SessionDiff {
         path: String,
+    },
+    /// The two sides of a git diff for one file: `HEAD` versus either the
+    /// working tree or the index.
+    GitDiff {
+        path: String,
+        /// Compare `HEAD` against the index rather than the working tree.
+        staged: bool,
     },
 
     GitStatus,
