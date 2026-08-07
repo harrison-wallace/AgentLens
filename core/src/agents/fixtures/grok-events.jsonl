@@ -1,0 +1,22 @@
+{"type":"turn_started","ts":1786121838290,"session_id":"sess-fixture-1","model_id":"grok-4.5","turn_number":1,"schema_version":"1.0","session_relationship":"primary","yolo_mode":true,"conversation_message_count":3}
+{"type":"phase_changed","ts":1786121838300,"phase":"waiting_for_model"}
+{"type":"phase_changed","ts":1786121838400,"phase":"streaming_reasoning"}
+{"type":"first_token","ts":1786121838500}
+{"type":"phase_changed","ts":1786121838600,"phase":"streaming_text"}
+{"type":"phase_changed","ts":1786121838700,"phase":"tool_execution"}
+{"type":"tool_started","ts":1786121838710,"tool_name":"read_file"}
+{"type":"tool_completed","ts":1786121838800,"tool_name":"read_file","tool_call_id":"tc-1","duration_ms":90,"outcome":"success"}
+{"type":"tool_started","ts":1786121838810,"tool_name":"search_replace"}
+{"type":"tool_completed","ts":1786121839622,"tool_name":"search_replace","tool_call_id":"tc-2","duration_ms":812,"outcome":"success"}
+{"type":"phase_changed","ts":1786121839700,"phase":"permission_prompt"}
+{"type":"permission_requested","ts":1786121839701,"tool_name":"run_terminal_command"}
+{"type":"permission_resolved","ts":1786121839701,"tool_name":"run_terminal_command","decision":"allow","wait_ms":0}
+{"type":"phase_changed","ts":1786121839702,"phase":"tool_execution"}
+{"type":"tool_started","ts":1786121839710,"tool_name":"run_terminal_command"}
+{"type":"tool_completed","ts":1786121840500,"tool_name":"run_terminal_command","tool_call_id":"tc-3","duration_ms":790,"outcome":"success"}
+{"type":"loop_started","ts":1786121840510,"loop_index":0}
+{"type":"mcp_server_starting","ts":1786121840520,"server_name":"demo-mcp"}
+{"type":"totally_unknown_event","ts":1786121840600,"payload":"ignore me"}
+this line is not json at all
+{"type":"turn_ended","ts":1786121841000,"outcome":"completed"}
+{"type":"phase_changed","ts":1786121841100,"phase":"streaming_text"

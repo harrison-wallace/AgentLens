@@ -387,7 +387,31 @@ pub struct UpdateCheck {
 #[serde(rename_all = "camelCase")]
 pub enum AgentKind {
     ClaudeCode,
-    Opencode,
+    Grok,
+}
+
+/// What an agent is doing right now, normalized across providers.
+///
+/// Grok reports a live phase machine; Claude Code derives a coarser signal
+/// from its session registry. Four states, not more: a wrong state is worse
+/// than a missing one, so providers under-claim when the source is ambiguous
+/// (Claude Code cannot distinguish a permission prompt from ordinary work,
+/// and maps both to `Working`).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum AgentActivity {
+    /// Producing output or running a tool.
+    ///
+    /// `detail` is a short human-readable sub-state such as `"thinking"`,
+    /// `"streaming"`, or a tool name — for display only, never for logic.
+    Working { detail: Option<String> },
+    /// Waiting on a human to answer a permission prompt.
+    Blocked,
+    /// Turn finished; waiting for the next instruction.
+    #[default]
+    Idle,
+    /// The session is over — process gone or heartbeat cold.
+    Stale,
 }
 
 /// One directory the app searches for agent sessions, as shown in settings.
@@ -416,6 +440,9 @@ pub struct SessionRef {
     pub title: Option<String>,
     /// Unix epoch milliseconds of the most recent record seen.
     pub last_activity: i64,
+    /// What the agent is doing right now, as best the provider can say.
+    #[serde(default)]
+    pub activity: AgentActivity,
 }
 
 /// One thing an agent did, normalized across providers. Everything
@@ -449,6 +476,14 @@ pub enum AgentEvent {
         session_id: String,
         at: i64,
         text: String,
+    },
+    /// The session's live state changed. Emitted only on a real transition,
+    /// never as a heartbeat — the UI re-renders the header indicator from
+    /// these, and a no-op event would thrash it for nothing.
+    ActivityChanged {
+        session_id: String,
+        at: i64,
+        activity: AgentActivity,
     },
     SessionEnded {
         session_id: String,

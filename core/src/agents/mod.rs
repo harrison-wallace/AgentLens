@@ -14,14 +14,75 @@
 //! agent it knows about.
 
 pub mod claude;
+pub mod grok;
 
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use crate::protocol::{AgentEvent, AgentKind, AgentRootInfo, SessionRef};
 
+/// How much of a session file's tail to read when the question is only "what
+/// does the end of this say". Session files grow without bound while an agent
+/// runs, so nothing that answers a question about *recent* records may read
+/// the whole thing.
+pub(crate) const METADATA_TAIL_BYTES: u64 = 64 * 1024;
+
+/// Read at most the last `METADATA_TAIL_BYTES` of `path`, dropping a leading
+/// partial line so every line handed back parses.
+///
+/// Shared by every provider: each one needs the tail of a growing append-only
+/// file, and reading it whole is the mistake that only shows up once a real
+/// session has run for an hour.
+pub(crate) fn read_tail(path: &Path) -> Option<String> {
+    let mut file = File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    let from = len.saturating_sub(METADATA_TAIL_BYTES);
+    file.seek(SeekFrom::Start(from)).ok()?;
+
+    let mut buffer = String::new();
+    // Lossy on purpose: one mangled multi-byte char must not lose the tail.
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).ok()?;
+    buffer.push_str(&String::from_utf8_lossy(&bytes));
+
+    if from > 0 {
+        // The window almost certainly started mid-record.
+        if let Some(newline) = buffer.find('\n') {
+            buffer.drain(..=newline);
+        }
+    }
+    Some(buffer)
+}
+
 /// Every provider the app ships. One place to add the next agent.
 pub fn providers() -> Vec<Box<dyn AgentProvider>> {
-    vec![Box::new(claude::ClaudeCode::new())]
+    vec![
+        Box::new(claude::ClaudeCode::new()),
+        Box::new(grok::Grok::new()),
+    ]
+}
+
+/// Is `cwd` the workspace, or somewhere inside it?
+///
+/// Descendants count. An agent that runs `cd src-tauri` mid-session writes
+/// that subdirectory as its `cwd` from then on, so an equality test loses the
+/// session partway through — which is exactly what happened the first time
+/// this ran against a live transcript.
+///
+/// Ancestors deliberately do *not* count. A session started above the
+/// workspace may be working on something else entirely, and the plan's rule is
+/// to prefer under-claiming to wrong attribution.
+///
+/// Compared on the normalized string rather than by canonicalizing: `cwd` is
+/// whatever the agent recorded, and the workspace root is already normalized
+/// by the time it reaches here. Shared by every provider so the rule cannot
+/// drift between them.
+pub(crate) fn is_within_workspace(cwd: &str, workspace: &Path) -> bool {
+    let normalized = |text: &str| text.replace('\\', "/").trim_end_matches('/').to_string();
+    let cwd = normalized(cwd);
+    let workspace = normalized(&workspace.to_string_lossy());
+    cwd == workspace || cwd.starts_with(&format!("{workspace}/"))
 }
 
 /// Roots detected automatically, plus the ones the user named, in that order
@@ -215,6 +276,7 @@ mod tests {
             agent: AgentKind::ClaudeCode,
             title: None,
             last_activity: 0,
+            activity: crate::protocol::AgentActivity::Idle,
         };
 
         let mut provider = ClaudeCode::new();

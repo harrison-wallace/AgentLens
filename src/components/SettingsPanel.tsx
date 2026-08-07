@@ -148,7 +148,7 @@ export default function SettingsPanel() {
 
 const AGENT_LABEL: Record<AgentKind, string> = {
   claudeCode: "Claude Code",
-  opencode: "opencode",
+  grok: "Grok",
 };
 
 /**

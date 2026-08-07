@@ -1,0 +1,812 @@
+//! Grok provider.
+//!
+//! Grok keeps sessions under `~/.grok/sessions/<encoded-cwd>/<session-id>/`,
+//! with a typed `events.jsonl` stream rather than a conversation transcript.
+//! That is a better activity signal than Claude Code's two-valued registry
+//! status: phases are stated (`streaming_reasoning`, `permission_prompt`, …)
+//! and map almost directly onto `AgentActivity`.
+//!
+//! The cwd encoding is percent-encoding, so it is reversible — none of Claude
+//! Code's lossy-slug collision problem. `events.jsonl` carries tool *names*
+//! only, never arguments or file paths; path extraction from
+//! `chat_history.jsonl` is a later task, and this provider deliberately emits
+//! `ToolCall` events with an empty `paths` vec.
+//!
+//! The format is not a stable API. Unknown event types are skipped, malformed
+//! lines are counted and ignored, and an unknown `schema_version` major stops
+//! extraction for that session rather than guessing.
+
+use std::collections::{HashMap, HashSet};
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use serde_json::Value;
+
+use super::{is_within_workspace, read_tail, AgentProvider, ParseStats};
+use crate::protocol::{AgentActivity, AgentEvent, AgentKind, SessionRef};
+
+/// Cap on a single `poll`, so a chatty session can't produce an unbounded
+/// batch. Grok is event-dense (hundreds of `phase_changed` per turn).
+const MAX_EVENTS_PER_POLL: usize = 500;
+
+/// How long a session may sit in `permission_prompt` before it counts as
+/// `Blocked`.
+///
+/// Entering the phase is **not** blocked: under `--always-approve` every
+/// prompt still fires and resolves in about zero milliseconds (measured
+/// across 1139 real events: median `wait_ms` 0, max 398). `Blocked` is only
+/// correct when the session is *still sitting in* that phase — no later
+/// event for longer than this threshold.
+const PERMISSION_PROMPT_DWELL_MS: i64 = 1000;
+
+/// Major `schema_version` this provider understands. Anything whose major
+/// does not match is skipped entirely for that session.
+const KNOWN_SCHEMA_MAJOR: &str = "1";
+
+#[derive(Default)]
+pub struct Grok {
+    /// Byte offset already consumed, per `events.jsonl`.
+    offsets: HashMap<PathBuf, u64>,
+    /// Last activity emitted per session, so `ActivityChanged` only fires on
+    /// a real transition.
+    last_activity: HashMap<String, AgentActivity>,
+    /// Sessions whose `schema_version` major we do not know. Once set, every
+    /// further poll returns nothing rather than guessing at a new format.
+    unsupported: HashSet<String>,
+    /// Most recent phase seen for a session, plus the event timestamp it
+    /// arrived at. Used for the `permission_prompt` dwell rule: Blocked only
+    /// when still sitting in that phase past `PERMISSION_PROMPT_DWELL_MS`.
+    ///
+    /// Only `phase_changed` replaces this. A tool or permission event
+    /// arriving mid-prompt does not clear it — the session is still sitting
+    /// in the phase, which is precisely what the dwell rule measures.
+    last_phase: HashMap<String, (String, i64)>,
+    /// `session_relationship` from the most recent `turn_started`, so tool
+    /// events in the same turn can set `sidechain` correctly.
+    relationship: HashMap<String, String>,
+    pub stats: ParseStats,
+}
+
+impl Grok {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+/// Decode a percent-encoded path component. Only `%XX` hex escapes are
+/// handled — enough for Grok's encoded cwd, without a URL-encoding crate.
+///
+/// Invalid escapes (truncated, non-hex) are left as literal text so a
+/// corrupted directory name degrades to a non-match rather than an error.
+pub(crate) fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (from_hex(bytes[i + 1]), from_hex(bytes[i + 2])) {
+                out.push((hi << 4) | lo);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn from_hex(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Normalize a Grok event `ts` to epoch milliseconds.
+///
+/// Grok writes a bare number, not the RFC 3339 string Claude Code uses.
+/// Magnitude decides the unit: microseconds (≥ 1e14), milliseconds (≥ 1e11),
+/// or seconds. The thresholds sit between the three scales for Unix time
+/// around the 2020s, so a clock a few decades off still classifies correctly.
+pub(crate) fn normalize_ts(ts: f64) -> i64 {
+    if !ts.is_finite() || ts < 0.0 {
+        return 0;
+    }
+    if ts >= 100_000_000_000_000.0 {
+        // Microseconds → milliseconds.
+        (ts / 1_000.0) as i64
+    } else if ts >= 100_000_000_000.0 {
+        // Already milliseconds.
+        ts as i64
+    } else {
+        // Seconds → milliseconds.
+        (ts * 1_000.0) as i64
+    }
+}
+
+fn ts_of(value: &Value) -> i64 {
+    value
+        .get("ts")
+        .and_then(|v| {
+            v.as_f64()
+                .or_else(|| v.as_i64().map(|i| i as f64))
+                .or_else(|| v.as_u64().map(|u| u as f64))
+        })
+        .map(normalize_ts)
+        .unwrap_or(0)
+}
+
+/// Does `dir` look like a Grok root? `sessions/` is the load-bearing part —
+/// mirrors how Claude Code requires `projects/`.
+fn looks_like_root(dir: &Path) -> bool {
+    dir.join("sessions").is_dir()
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+}
+
+fn now_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Map a Grok phase string onto activity. `permission_prompt` is handled by
+/// the dwell rule, not here — entering it is not yet Blocked.
+fn activity_for_phase(phase: &str) -> Option<AgentActivity> {
+    match phase {
+        "waiting_for_model" => Some(AgentActivity::Working {
+            detail: Some("waiting".into()),
+        }),
+        "streaming_reasoning" => Some(AgentActivity::Working {
+            detail: Some("thinking".into()),
+        }),
+        "streaming_text" => Some(AgentActivity::Working {
+            detail: Some("streaming".into()),
+        }),
+        "tool_execution" => Some(AgentActivity::Working {
+            detail: Some("tool".into()),
+        }),
+        // permission_prompt: dwell rule decides Working vs Blocked.
+        "permission_prompt" => None,
+        _ => None,
+    }
+}
+
+/// Is `schema_version` a major this code knows? Only `1.x` is supported.
+fn schema_supported(version: &str) -> bool {
+    let major = version.split('.').next().unwrap_or(version);
+    major == KNOWN_SCHEMA_MAJOR
+}
+
+impl AgentProvider for Grok {
+    fn kind(&self) -> AgentKind {
+        AgentKind::Grok
+    }
+
+    fn detect_roots(&self) -> Vec<PathBuf> {
+        // No well-known env override (unlike CLAUDE_CONFIG_DIR); only the
+        // conventional home directory is detected. The agent_roots setting
+        // covers anything else.
+        let mut roots = Vec::new();
+        if let Some(home) = home_dir() {
+            let candidate = home.join(".grok");
+            if looks_like_root(&candidate) {
+                roots.push(candidate);
+            }
+        }
+        roots
+    }
+
+    fn claims_root(&self, dir: &Path) -> bool {
+        looks_like_root(dir)
+    }
+
+    fn discover(&self, workspace: &Path, roots: &[PathBuf]) -> Vec<SessionRef> {
+        let mut sessions = Vec::new();
+        for root in roots {
+            let sessions_dir = root.join("sessions");
+            let Ok(cwd_entries) = std::fs::read_dir(&sessions_dir) else {
+                continue;
+            };
+            for cwd_entry in cwd_entries.filter_map(|e| e.ok()) {
+                let cwd_path = cwd_entry.path();
+                if !cwd_path.is_dir() {
+                    continue;
+                }
+                let encoded = cwd_entry.file_name().to_string_lossy().into_owned();
+                let decoded = percent_decode(&encoded);
+                if !is_within_workspace(&decoded, workspace) {
+                    continue;
+                }
+                let Ok(session_entries) = std::fs::read_dir(&cwd_path) else {
+                    continue;
+                };
+                for session_entry in session_entries.filter_map(|e| e.ok()) {
+                    let session_path = session_entry.path();
+                    if !session_path.is_dir() {
+                        continue;
+                    }
+                    let events_file = session_path.join("events.jsonl");
+                    if !events_file.is_file() {
+                        continue;
+                    }
+                    let id = session_entry.file_name().to_string_lossy().into_owned();
+                    let last_activity = file_last_activity(&events_file);
+                    sessions.push(SessionRef {
+                        id,
+                        agent: AgentKind::Grok,
+                        title: None,
+                        last_activity,
+                        // Discovery has no live process signal for Grok yet;
+                        // activity is refined by poll as events stream in.
+                        // A session with a recent file is presumed Idle until
+                        // a phase says otherwise.
+                        activity: AgentActivity::Idle,
+                    });
+                }
+            }
+        }
+        sessions.sort_by_key(|session| -session.last_activity);
+        sessions
+    }
+
+    fn poll(
+        &mut self,
+        workspace: &Path,
+        session: &SessionRef,
+        roots: &[PathBuf],
+    ) -> Vec<AgentEvent> {
+        let _ = workspace;
+        if self.unsupported.contains(&session.id) {
+            return Vec::new();
+        }
+
+        let Some(path) = self.events_path(session, roots) else {
+            return self.maybe_dwell(session);
+        };
+        let Ok(mut file) = File::open(&path) else {
+            return self.maybe_dwell(session);
+        };
+        let Ok(len) = file.metadata().map(|m| m.len()) else {
+            return self.maybe_dwell(session);
+        };
+
+        // First sight starts at the end — same "watching since" rule as
+        // Claude Code and the phase-1 watcher.
+        let offset = *self.offsets.entry(path.clone()).or_insert(len);
+        let offset = if offset > len { 0 } else { offset };
+
+        let mut events = Vec::new();
+
+        if offset < len {
+            if file.seek(SeekFrom::Start(offset)).is_err() {
+                return self.maybe_dwell(session);
+            }
+            let mut bytes = Vec::new();
+            if file.read_to_end(&mut bytes).is_err() {
+                return self.maybe_dwell(session);
+            }
+
+            // Only complete lines. A partial trailing record stays for the
+            // next poll, exactly as the Claude Code tailer does.
+            let Some(last_newline) = bytes.iter().rposition(|byte| *byte == b'\n') else {
+                return self.maybe_dwell(session);
+            };
+            let complete = &bytes[..=last_newline];
+            self.offsets.insert(path, offset + complete.len() as u64);
+
+            for line in String::from_utf8_lossy(complete).lines() {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                self.stats.records += 1;
+                match serde_json::from_str::<Value>(line) {
+                    Ok(record) => {
+                        if let Some(batch) = self.events_from(&record, session) {
+                            events.extend(batch);
+                        } else if self.unsupported.contains(&session.id) {
+                            // Unknown schema: drop everything for this
+                            // session and report zero events, no error.
+                            return Vec::new();
+                        }
+                    }
+                    Err(_) => self.stats.skipped += 1,
+                }
+                if events.len() >= MAX_EVENTS_PER_POLL {
+                    break;
+                }
+            }
+        }
+
+        // Dwell check runs even when no new lines arrived — Blocked is a
+        // wall-clock condition, not an event.
+        events.extend(self.maybe_dwell(session));
+        events
+    }
+}
+
+impl Grok {
+    fn events_path(&self, session: &SessionRef, roots: &[PathBuf]) -> Option<PathBuf> {
+        for root in roots {
+            let sessions_dir = root.join("sessions");
+            let Ok(cwd_entries) = std::fs::read_dir(&sessions_dir) else {
+                continue;
+            };
+            for cwd_entry in cwd_entries.filter_map(|e| e.ok()) {
+                let cwd_path = cwd_entry.path();
+                if !cwd_path.is_dir() {
+                    continue;
+                }
+                let candidate = cwd_path.join(&session.id).join("events.jsonl");
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+        None
+    }
+
+    /// Convert one event record. Returns `None` when the session's schema is
+    /// unsupported (caller must abandon the batch). Empty vec = skip quietly.
+    fn events_from(&mut self, record: &Value, session: &SessionRef) -> Option<Vec<AgentEvent>> {
+        let event_type = record.get("type").and_then(Value::as_str).unwrap_or("");
+        let at = ts_of(record);
+        let session_id = session.id.clone();
+
+        let mut out = Vec::new();
+        match event_type {
+            "turn_started" => {
+                if let Some(version) = record.get("schema_version").and_then(Value::as_str) {
+                    if !schema_supported(version) {
+                        self.unsupported.insert(session_id);
+                        return None;
+                    }
+                }
+                if let Some(rel) = record.get("session_relationship").and_then(Value::as_str) {
+                    self.relationship
+                        .insert(session.id.clone(), rel.to_string());
+                }
+                out.push(AgentEvent::SessionStarted {
+                    session_id: session_id.clone(),
+                    agent: AgentKind::Grok,
+                    title: None,
+                    at,
+                });
+            }
+            "tool_started" | "tool_completed" => {
+                let tool = record
+                    .get("tool_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown")
+                    .to_string();
+                let sidechain = self
+                    .relationship
+                    .get(&session.id)
+                    .is_some_and(|r| r != "primary");
+                out.push(AgentEvent::ToolCall {
+                    session_id: session_id.clone(),
+                    at,
+                    tool,
+                    summary: None,
+                    // events.jsonl has no paths — chat_history is a later task.
+                    paths: Vec::new(),
+                    sidechain,
+                });
+            }
+            "phase_changed" => {
+                let phase = record
+                    .get("phase")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                self.last_phase
+                    .insert(session.id.clone(), (phase.clone(), at));
+
+                if phase == "permission_prompt" {
+                    // Not Blocked yet — dwell rule decides on a later poll.
+                    // Surface Working so the indicator is not stuck on Idle
+                    // while the prompt is still resolving under yolo mode.
+                    if let Some(event) = self.emit_activity(
+                        &session_id,
+                        at,
+                        AgentActivity::Working {
+                            detail: Some("permission".into()),
+                        },
+                    ) {
+                        out.push(event);
+                    }
+                } else if let Some(activity) = activity_for_phase(&phase) {
+                    if let Some(event) = self.emit_activity(&session_id, at, activity) {
+                        out.push(event);
+                    }
+                } else {
+                    self.stats.skipped += 1;
+                }
+            }
+            "turn_ended" => {
+                self.last_phase.remove(&session.id);
+                if let Some(event) = self.emit_activity(&session_id, at, AgentActivity::Idle) {
+                    out.push(event);
+                }
+                out.push(AgentEvent::SessionEnded { session_id, at });
+            }
+            // Known but not mapped to protocol events — count as seen, skip.
+            "permission_requested"
+            | "permission_resolved"
+            | "loop_started"
+            | "first_token"
+            | "mcp_server_starting" => {}
+            // Unknown type: skip and tally, never error.
+            _ => {
+                self.stats.skipped += 1;
+            }
+        }
+        Some(out)
+    }
+
+    fn emit_activity(
+        &mut self,
+        session_id: &str,
+        at: i64,
+        activity: AgentActivity,
+    ) -> Option<AgentEvent> {
+        if self.last_activity.get(session_id) == Some(&activity) {
+            return None;
+        }
+        self.last_activity
+            .insert(session_id.to_string(), activity.clone());
+        Some(AgentEvent::ActivityChanged {
+            session_id: session_id.to_string(),
+            at,
+            activity,
+        })
+    }
+
+    /// If the session is still in `permission_prompt` past the dwell
+    /// threshold, emit Blocked. Called every poll, including quiet ones.
+    fn maybe_dwell(&mut self, session: &SessionRef) -> Vec<AgentEvent> {
+        let Some((phase, since)) = self.last_phase.get(&session.id).cloned() else {
+            return Vec::new();
+        };
+        if phase != "permission_prompt" {
+            return Vec::new();
+        }
+        let now = now_millis();
+        if now.saturating_sub(since) < PERMISSION_PROMPT_DWELL_MS {
+            return Vec::new();
+        }
+        self.emit_activity(&session.id, now, AgentActivity::Blocked)
+            .into_iter()
+            .collect()
+    }
+}
+
+/// Best-effort last-activity time from the events file: prefer the last
+/// parseable `ts`, fall back to mtime.
+///
+/// Reads only the tail. `events.jsonl` grows for as long as the session runs
+/// — one observed session held 854 phase events — and discovery runs on every
+/// refresh, so reading the whole file to find its last line would make
+/// discovery cost scale with session length.
+fn file_last_activity(path: &Path) -> i64 {
+    if let Some(text) = read_tail(path) {
+        for line in text.lines().rev() {
+            if let Ok(value) = serde_json::from_str::<Value>(line) {
+                let at = ts_of(&value);
+                if at > 0 {
+                    return at;
+                }
+            }
+        }
+    }
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const EVENTS: &str = include_str!("fixtures/grok-events.jsonl");
+
+    fn workspace() -> &'static Path {
+        Path::new("/home/dev/project")
+    }
+
+    fn session(id: &str) -> SessionRef {
+        SessionRef {
+            id: id.to_string(),
+            agent: AgentKind::Grok,
+            title: None,
+            last_activity: 0,
+            activity: AgentActivity::Idle,
+        }
+    }
+
+    /// `<root>/sessions/<encoded-cwd>/<id>/events.jsonl`.
+    fn session_tree(
+        contents: &str,
+        id: &str,
+        cwd: &str,
+    ) -> (tempfile::TempDir, Vec<PathBuf>, PathBuf) {
+        let root = tempfile::tempdir().unwrap();
+        let encoded = cwd
+            .bytes()
+            .map(|b| {
+                if b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' {
+                    (b as char).to_string()
+                } else {
+                    format!("%{b:02X}")
+                }
+            })
+            .collect::<String>();
+        let dir = root.path().join("sessions").join(&encoded).join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("events.jsonl");
+        std::fs::write(&file, contents).unwrap();
+        let roots = vec![root.path().to_path_buf()];
+        (root, roots, file)
+    }
+
+    // -- percent-decode -----------------------------------------------------
+
+    #[test]
+    fn percent_decode_reverses_encoded_cwd() {
+        assert_eq!(
+            percent_decode("%2Fhome%2Fdev%2Fproject"),
+            "/home/dev/project"
+        );
+    }
+
+    #[test]
+    fn percent_decode_preserves_literal_hyphen_and_space_escape() {
+        // A path component with a literal `-` must survive (not an escape).
+        assert_eq!(percent_decode("%2Fhome%2Fdev%2Fmy-app"), "/home/dev/my-app");
+        // Space as %20.
+        assert_eq!(
+            percent_decode("%2Fhome%2Fdev%2Fmy%20app"),
+            "/home/dev/my app"
+        );
+    }
+
+    // -- workspace match ----------------------------------------------------
+
+    #[test]
+    fn workspace_match_accepts_subdirectory_rejects_sibling() {
+        assert!(is_within_workspace("/home/dev/project", workspace()));
+        assert!(is_within_workspace("/home/dev/project/src", workspace()));
+        assert!(!is_within_workspace("/home/dev/other", workspace()));
+        assert!(!is_within_workspace("/home/dev", workspace()));
+    }
+
+    // -- ts normalization ---------------------------------------------------
+
+    #[test]
+    fn ts_normalization_to_epoch_millis() {
+        // Seconds around 2026.
+        assert_eq!(normalize_ts(1_786_121_838.0), 1_786_121_838_000);
+        // Milliseconds (the unit Grok actually writes).
+        assert_eq!(normalize_ts(1_786_121_838_290.0), 1_786_121_838_290);
+        // Microseconds.
+        assert_eq!(normalize_ts(1_786_121_838_290_000.0), 1_786_121_838_290);
+    }
+
+    // -- discovery ----------------------------------------------------------
+
+    #[test]
+    fn discovers_sessions_under_matching_encoded_cwd() {
+        let id = "sess-discover-1";
+        let (_dir, roots, _) = session_tree(EVENTS, id, "/home/dev/project");
+        // Sibling workspace must not be claimed.
+        let other = roots[0]
+            .join("sessions")
+            .join("%2Fhome%2Fdev%2Fother")
+            .join("sess-other");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("events.jsonl"), EVENTS).unwrap();
+
+        let found = Grok::new().discover(workspace(), &roots);
+        let ids: Vec<&str> = found.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, vec![id]);
+    }
+
+    #[test]
+    fn claims_a_root_with_sessions_subdirectory() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!Grok::new().claims_root(dir.path()));
+        std::fs::create_dir_all(dir.path().join("sessions")).unwrap();
+        assert!(Grok::new().claims_root(dir.path()));
+    }
+
+    // -- tailing ------------------------------------------------------------
+
+    #[test]
+    fn offset_tailer_returns_only_new_complete_lines() {
+        let id = "sess-tail-1";
+        let (_dir, roots, file) = session_tree("", id, "/home/dev/project");
+        let mut provider = Grok::new();
+
+        // First poll seeds the offset at EOF.
+        assert!(provider.poll(workspace(), &session(id), &roots).is_empty());
+
+        // Partial line — must not parse.
+        std::fs::write(&file, r#"{"type":"turn_started","ts":1786121838290,"#).unwrap();
+        assert!(
+            provider.poll(workspace(), &session(id), &roots).is_empty(),
+            "partial trailing line must wait for its newline"
+        );
+
+        // Complete the line plus one more; both arrive once, never re-emitted.
+        let line1 = concat!(
+            r#"{"type":"turn_started","ts":1786121838290,"session_id":"s","#,
+            r#""model_id":"grok-4.5","turn_number":1,"schema_version":"1.0","#,
+            r#""session_relationship":"primary","yolo_mode":true,"#,
+            r#""conversation_message_count":3}"#,
+        );
+        let line2 = r#"{"type":"phase_changed","ts":1786121838300,"phase":"streaming_reasoning"}"#;
+        std::fs::write(&file, format!("{line1}\n{line2}\n")).unwrap();
+        let first = provider.poll(workspace(), &session(id), &roots);
+        assert!(
+            first
+                .iter()
+                .any(|e| matches!(e, AgentEvent::SessionStarted { .. })),
+            "turn_started → SessionStarted: {first:?}"
+        );
+        assert!(
+            first.iter().any(|e| matches!(
+                e,
+                AgentEvent::ActivityChanged {
+                    activity: AgentActivity::Working { detail: Some(d) },
+                    ..
+                } if d == "thinking"
+            )),
+            "streaming_reasoning → Working thinking: {first:?}"
+        );
+
+        // Second poll with no new data → nothing.
+        assert!(provider.poll(workspace(), &session(id), &roots).is_empty());
+    }
+
+    #[test]
+    fn malformed_and_unknown_lines_are_skipped_and_counted() {
+        let id = "sess-hostile-1";
+        let (_dir, roots, file) = session_tree("", id, "/home/dev/project");
+        let mut provider = Grok::new();
+        provider.poll(workspace(), &session(id), &roots);
+
+        // Fixture covers unknown type + malformed line + partial trailing.
+        std::fs::write(&file, EVENTS).unwrap();
+        let events = provider.poll(workspace(), &session(id), &roots);
+
+        assert!(provider.stats.skipped >= 2, "unknown type + bad json");
+        assert!(provider.stats.records >= 5);
+        // Must not have errored: we got some real events out.
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::ToolCall { .. })));
+    }
+
+    #[test]
+    fn unknown_schema_version_yields_zero_events_and_no_error() {
+        let id = "sess-schema-2";
+        let body = r#"{"type":"turn_started","ts":1786121838290,"session_id":"s","model_id":"grok-9","turn_number":1,"schema_version":"2.0","session_relationship":"primary","yolo_mode":false,"conversation_message_count":0}
+{"type":"phase_changed","ts":1786121838300,"phase":"streaming_text"}
+"#;
+        let (_dir, roots, file) = session_tree("", id, "/home/dev/project");
+        let mut provider = Grok::new();
+        provider.poll(workspace(), &session(id), &roots);
+        std::fs::write(&file, body).unwrap();
+        let events = provider.poll(workspace(), &session(id), &roots);
+        assert!(
+            events.is_empty(),
+            "unknown major must not guess: {events:?}"
+        );
+        // Subsequent polls stay quiet.
+        assert!(provider.poll(workspace(), &session(id), &roots).is_empty());
+    }
+
+    // -- permission_prompt dwell rule ---------------------------------------
+
+    #[test]
+    fn fast_permission_allow_never_produces_blocked() {
+        // Under --always-approve every prompt resolves in ~0 ms. Entering
+        // permission_prompt and leaving it in the same batch must never
+        // surface Blocked.
+        let id = "sess-perm-fast";
+        let body = r#"{"type":"turn_started","ts":1786121838290,"session_id":"s","model_id":"grok-4.5","turn_number":1,"schema_version":"1.0","session_relationship":"primary","yolo_mode":true,"conversation_message_count":1}
+{"type":"phase_changed","ts":1786121838400,"phase":"permission_prompt"}
+{"type":"permission_requested","ts":1786121838401,"tool_name":"search_replace"}
+{"type":"permission_resolved","ts":1786121838401,"tool_name":"search_replace","decision":"allow","wait_ms":0}
+{"type":"phase_changed","ts":1786121838402,"phase":"tool_execution"}
+{"type":"tool_started","ts":1786121838403,"tool_name":"search_replace"}
+{"type":"tool_completed","ts":1786121838500,"tool_name":"search_replace","tool_call_id":"c1","duration_ms":97,"outcome":"success"}
+"#;
+        let (_dir, roots, file) = session_tree("", id, "/home/dev/project");
+        let mut provider = Grok::new();
+        provider.poll(workspace(), &session(id), &roots);
+        std::fs::write(&file, body).unwrap();
+        let events = provider.poll(workspace(), &session(id), &roots);
+        assert!(
+            events.iter().all(|e| !matches!(
+                e,
+                AgentEvent::ActivityChanged {
+                    activity: AgentActivity::Blocked,
+                    ..
+                }
+            )),
+            "fast allow must not be Blocked: {events:?}"
+        );
+    }
+
+    #[test]
+    fn dwelling_permission_prompt_becomes_blocked() {
+        // A prompt with no follow-up past the threshold is the real blocked
+        // case: someone has to answer.
+        let id = "sess-perm-dwell";
+        // Timestamp far enough in the past that now - ts > dwell threshold.
+        let old_ts = now_millis() - PERMISSION_PROMPT_DWELL_MS - 500;
+        let body = format!(
+            r#"{{"type":"turn_started","ts":{old_ts},"session_id":"s","model_id":"grok-4.5","turn_number":1,"schema_version":"1.0","session_relationship":"primary","yolo_mode":false,"conversation_message_count":1}}
+{{"type":"phase_changed","ts":{old_ts},"phase":"permission_prompt"}}
+"#
+        );
+        let (_dir, roots, file) = session_tree("", id, "/home/dev/project");
+        let mut provider = Grok::new();
+        provider.poll(workspace(), &session(id), &roots);
+        std::fs::write(&file, body).unwrap();
+        let events = provider.poll(workspace(), &session(id), &roots);
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                AgentEvent::ActivityChanged {
+                    activity: AgentActivity::Blocked,
+                    ..
+                }
+            )),
+            "dwelling prompt must be Blocked: {events:?}"
+        );
+    }
+
+    #[test]
+    fn normal_turn_emits_session_tools_and_idle() {
+        let id = "sess-normal";
+        let (_dir, roots, file) = session_tree("", id, "/home/dev/project");
+        let mut provider = Grok::new();
+        provider.poll(workspace(), &session(id), &roots);
+        std::fs::write(&file, EVENTS).unwrap();
+        let events = provider.poll(workspace(), &session(id), &roots);
+
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::SessionStarted { .. })));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            AgentEvent::ToolCall { tool, paths, .. }
+                if tool == "search_replace" && paths.is_empty()
+        )));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            AgentEvent::ActivityChanged {
+                activity: AgentActivity::Idle,
+                ..
+            }
+        )));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::SessionEnded { .. })));
+    }
+}

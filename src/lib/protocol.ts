@@ -244,7 +244,19 @@ export interface UpdateCheck {
 }
 
 /** Which coding agent a session belongs to. */
-export type AgentKind = "claudeCode" | "opencode";
+export type AgentKind = "claudeCode" | "grok";
+
+/**
+ * What an agent is doing right now, normalized across providers.
+ * Discriminated on `kind`, mirroring the Rust tagged enum.
+ *
+ * `detail` on `working` is display-only (e.g. "thinking", a tool name).
+ */
+export type AgentActivity =
+  | { kind: "working"; detail: string | null }
+  | { kind: "blocked" }
+  | { kind: "idle" }
+  | { kind: "stale" };
 
 /** One directory the app searches for agent sessions, as shown in settings. */
 export interface AgentRootInfo {
@@ -268,6 +280,8 @@ export interface SessionRef {
   title: string | null;
   /** Unix epoch milliseconds of the most recent record seen. */
   lastActivity: number;
+  /** What the agent is doing right now, as best the provider can say. */
+  activity: AgentActivity;
 }
 
 /**
@@ -295,6 +309,12 @@ export type AgentEvent =
       sidechain: boolean;
     }
   | { kind: "assistantNote"; sessionId: string; at: number; text: string }
+  | {
+      kind: "activityChanged";
+      sessionId: string;
+      at: number;
+      activity: AgentActivity;
+    }
   | { kind: "sessionEnded"; sessionId: string; at: number };
 
 /** The result of tailing a session: what happened, plus what couldn't be read. */

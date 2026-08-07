@@ -5,8 +5,8 @@
 //! per turn while the session runs. Tailing that file is how AgentLens learns
 //! which tool call touched which file.
 //!
-//! Two things about the layout are easy to get wrong, and both are load-bearing
-//! (verified against Claude Code 2.1.220):
+//! Three things about the layout are easy to get wrong, and all are
+//! load-bearing (verified against Claude Code 2.1.220 / 2.1.224):
 //!
 //! 1. **There is rarely one config root.** `CLAUDE_CONFIG_DIR` selects a
 //!    profile — a wholly separate config directory — and a machine commonly
@@ -19,6 +19,13 @@
 //!    is therefore only good enough to *find candidates*; the authority on
 //!    which workspace a session belongs to is the `cwd` field inside the
 //!    records themselves.
+//! 3. **Live sessions have a registry.** `<config-root>/sessions/<pid>.json`
+//!    is the primary path for *running* sessions: it carries `pid`,
+//!    `procStart`, `sessionId`, `cwd`, and `status` (`busy` / `idle`) with
+//!    heartbeats. Slug-based discovery stays as the fallback for sessions
+//!    with no live process. The registry also carries
+//!    `messagingSocketPath` — **do not connect to it**; AgentLens only reads
+//!    files.
 //!
 //! The format is not a stable API, so every read here is defensive: unknown
 //! record types are skipped, malformed lines are counted and ignored, and a
@@ -28,17 +35,13 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
-use super::{epoch_millis, AgentProvider, ParseStats};
+use super::{epoch_millis, is_within_workspace, read_tail, AgentProvider, ParseStats};
 use crate::paths::to_workspace_relative;
-use crate::protocol::{AgentEvent, AgentKind, SessionRef};
-
-/// How much of a transcript's tail to read when working out what session it
-/// is. Enough to hold the recent records that carry `cwd` and `ai-title`,
-/// bounded so discovery cost doesn't scale with a multi-megabyte session.
-const METADATA_TAIL_BYTES: u64 = 64 * 1024;
+use crate::protocol::{AgentActivity, AgentEvent, AgentKind, SessionRef};
 
 /// Cap on a single `poll`, so a session that was appended to heavily while the
 /// app was busy can't produce an unbounded batch.
@@ -48,10 +51,20 @@ const MAX_EVENTS_PER_POLL: usize = 500;
 /// command, and what it touched is left to the correlation engine.
 const PATH_INPUT_KEYS: [&str; 2] = ["file_path", "path"];
 
+/// How long a registry heartbeat may lag before a non-Linux host treats the
+/// session as dead. Linux uses `/proc/<pid>` instead; this is only the
+/// documented fallback where that check is unavailable.
+#[cfg(not(target_os = "linux"))]
+const HEARTBEAT_STALE_MS: i64 = 5 * 60 * 1000;
+
 #[derive(Default)]
 pub struct ClaudeCode {
     /// Byte offset already consumed, per transcript.
     offsets: HashMap<PathBuf, u64>,
+    /// Last activity state emitted for a session id. `ActivityChanged` only
+    /// fires on a real transition — re-emitting the same state would thrash
+    /// the header indicator for nothing.
+    last_activity: HashMap<String, AgentActivity>,
     pub stats: ParseStats,
 }
 
@@ -217,29 +230,6 @@ fn candidate_transcripts(workspace: &Path, roots: &[PathBuf]) -> Vec<PathBuf> {
     candidates
 }
 
-/// Read at most the last `METADATA_TAIL_BYTES` of `path`, dropping a leading
-/// partial line so every line handed back parses.
-fn read_tail(path: &Path) -> Option<String> {
-    let mut file = File::open(path).ok()?;
-    let len = file.metadata().ok()?.len();
-    let from = len.saturating_sub(METADATA_TAIL_BYTES);
-    file.seek(SeekFrom::Start(from)).ok()?;
-
-    let mut buffer = String::new();
-    // Lossy on purpose: one mangled multi-byte char must not lose the tail.
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).ok()?;
-    buffer.push_str(&String::from_utf8_lossy(&bytes));
-
-    if from > 0 {
-        // The window almost certainly started mid-record.
-        if let Some(newline) = buffer.find('\n') {
-            buffer.drain(..=newline);
-        }
-    }
-    Some(buffer)
-}
-
 /// What a transcript's recent records say about it.
 struct Metadata {
     /// Every distinct `cwd` seen in the window. Plural on purpose: `cwd` is
@@ -277,27 +267,6 @@ fn read_metadata(path: &Path) -> Option<Metadata> {
         }
     }
     Some(meta)
-}
-
-/// Is `cwd` the workspace, or somewhere inside it?
-///
-/// Descendants count. An agent that runs `cd src-tauri` mid-session writes
-/// that subdirectory as its `cwd` from then on, so an equality test loses the
-/// session partway through — which is exactly what happened the first time
-/// this ran against a live transcript.
-///
-/// Ancestors deliberately do *not* count. A session started above the
-/// workspace may be working on something else entirely, and the plan's rule is
-/// to prefer under-claiming to wrong attribution.
-///
-/// Compared on the normalized string rather than by canonicalizing: `cwd` is
-/// whatever the agent recorded, and the workspace root is already normalized
-/// by the time it reaches here.
-fn is_within_workspace(cwd: &str, workspace: &Path) -> bool {
-    let normalized = |text: &str| text.replace('\\', "/").trim_end_matches('/').to_string();
-    let cwd = normalized(cwd);
-    let workspace = normalized(&workspace.to_string_lossy());
-    cwd == workspace || cwd.starts_with(&format!("{workspace}/"))
 }
 
 /// Every `tool_use` block in one assistant record, as events.
@@ -404,28 +373,43 @@ impl AgentProvider for ClaudeCode {
     }
 
     fn discover(&self, workspace: &Path, roots: &[PathBuf]) -> Vec<SessionRef> {
-        let mut sessions: Vec<SessionRef> = candidate_transcripts(workspace, roots)
-            .into_iter()
-            .filter_map(|path| {
-                let meta = read_metadata(&path)?;
-                // Any recorded position inside the workspace claims the
-                // session; none at all means we can't attribute it to anything.
-                if !meta
-                    .cwds
-                    .iter()
-                    .any(|cwd| is_within_workspace(cwd, workspace))
-                {
-                    return None;
-                }
-                Some(SessionRef {
-                    id: path.file_stem()?.to_string_lossy().into_owned(),
-                    agent: AgentKind::ClaudeCode,
-                    title: meta.title,
-                    last_activity: meta.last_activity,
-                })
-            })
-            .collect();
+        // Registry first: it answers "which sessions are live, where, and are
+        // they working" from one small file per process. Slug discovery fills
+        // in everything the registry no longer tracks (process gone).
+        let mut by_id: HashMap<String, SessionRef> = HashMap::new();
 
+        for session in registry_sessions(workspace, roots) {
+            by_id.insert(session.id.clone(), session);
+        }
+
+        for path in candidate_transcripts(workspace, roots) {
+            let Some(meta) = read_metadata(&path) else {
+                continue;
+            };
+            // Any recorded position inside the workspace claims the
+            // session; none at all means we can't attribute it to anything.
+            if !meta
+                .cwds
+                .iter()
+                .any(|cwd| is_within_workspace(cwd, workspace))
+            {
+                continue;
+            }
+            let Some(id) = path.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
+                continue;
+            };
+            // Live registry entry wins: it already carries real activity.
+            // Transcript-only sessions have no live process → Stale.
+            by_id.entry(id.clone()).or_insert(SessionRef {
+                id,
+                agent: AgentKind::ClaudeCode,
+                title: meta.title,
+                last_activity: meta.last_activity,
+                activity: AgentActivity::Stale,
+            });
+        }
+
+        let mut sessions: Vec<SessionRef> = by_id.into_values().collect();
         // Negated rather than reversed so the most recent session is first.
         sessions.sort_by_key(|session| -session.last_activity);
         sessions
@@ -437,14 +421,41 @@ impl AgentProvider for ClaudeCode {
         session: &SessionRef,
         roots: &[PathBuf],
     ) -> Vec<AgentEvent> {
+        let mut events = Vec::new();
+
+        // Activity is driven by the registry, not the transcript: status is
+        // two-valued and lives in the small per-pid file. Re-check every poll
+        // so a busy→idle flip surfaces even when the transcript is quiet.
+        if let Some((activity, at)) = registry_activity_for(&session.id, roots) {
+            if self.last_activity.get(&session.id) != Some(&activity) {
+                self.last_activity
+                    .insert(session.id.clone(), activity.clone());
+                events.push(AgentEvent::ActivityChanged {
+                    session_id: session.id.clone(),
+                    at,
+                    activity,
+                });
+            }
+        } else if self.last_activity.get(&session.id) != Some(&AgentActivity::Stale) {
+            // No live registry entry → process is gone.
+            let at = now_millis();
+            self.last_activity
+                .insert(session.id.clone(), AgentActivity::Stale);
+            events.push(AgentEvent::ActivityChanged {
+                session_id: session.id.clone(),
+                at,
+                activity: AgentActivity::Stale,
+            });
+        }
+
         let Some(path) = self.transcript_path(workspace, session, roots) else {
-            return Vec::new();
+            return events;
         };
         let Ok(mut file) = File::open(&path) else {
-            return Vec::new();
+            return events;
         };
         let Ok(len) = file.metadata().map(|m| m.len()) else {
-            return Vec::new();
+            return events;
         };
 
         // First sight of a session starts at the end: a workspace opened
@@ -455,25 +466,24 @@ impl AgentProvider for ClaudeCode {
         let offset = if offset > len { 0 } else { offset };
 
         if offset == len {
-            return Vec::new();
+            return events;
         }
         if file.seek(SeekFrom::Start(offset)).is_err() {
-            return Vec::new();
+            return events;
         }
         let mut bytes = Vec::new();
         if file.read_to_end(&mut bytes).is_err() {
-            return Vec::new();
+            return events;
         }
 
         // Only consume through the last newline. A record still being written
         // stays unread and is picked up whole on the next poll.
         let Some(last_newline) = bytes.iter().rposition(|byte| *byte == b'\n') else {
-            return Vec::new();
+            return events;
         };
         let complete = &bytes[..=last_newline];
         self.offsets.insert(path, offset + complete.len() as u64);
 
-        let mut events = Vec::new();
         for line in String::from_utf8_lossy(complete).lines() {
             if line.trim().is_empty() {
                 continue;
@@ -489,6 +499,184 @@ impl AgentProvider for ClaudeCode {
         }
         events
     }
+}
+
+// -- live session registry --------------------------------------------------
+
+/// One entry from `<config-root>/sessions/<pid>.json`.
+struct RegistryEntry {
+    session_id: String,
+    cwd: String,
+    title: Option<String>,
+    status: String,
+    pid: u32,
+    proc_start: Option<String>,
+    updated_at: i64,
+    status_updated_at: i64,
+}
+
+/// Live (or recently live) sessions from every root's registry, filtered to
+/// those whose `cwd` is the workspace or a descendant.
+fn registry_sessions(workspace: &Path, roots: &[PathBuf]) -> Vec<SessionRef> {
+    let mut out = Vec::new();
+    for root in roots {
+        let sessions_dir = root.join("sessions");
+        let Ok(entries) = std::fs::read_dir(&sessions_dir) else {
+            continue;
+        };
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path.extension().is_none_or(|ext| ext != "json") {
+                continue;
+            }
+            let Some(reg) = read_registry_entry(&path) else {
+                continue;
+            };
+            if !is_within_workspace(&reg.cwd, workspace) {
+                continue;
+            }
+            let activity = activity_from_registry(&reg);
+            out.push(SessionRef {
+                id: reg.session_id,
+                agent: AgentKind::ClaudeCode,
+                title: reg.title,
+                last_activity: reg.status_updated_at.max(reg.updated_at),
+                activity,
+            });
+        }
+    }
+    out
+}
+
+/// Current activity for `session_id` from any root's registry, if a live
+/// entry still exists.
+fn registry_activity_for(session_id: &str, roots: &[PathBuf]) -> Option<(AgentActivity, i64)> {
+    for root in roots {
+        let sessions_dir = root.join("sessions");
+        let Ok(entries) = std::fs::read_dir(&sessions_dir) else {
+            continue;
+        };
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path.extension().is_none_or(|ext| ext != "json") {
+                continue;
+            }
+            let Some(reg) = read_registry_entry(&path) else {
+                continue;
+            };
+            if reg.session_id != session_id {
+                continue;
+            }
+            let at = reg.status_updated_at.max(reg.updated_at);
+            return Some((activity_from_registry(&reg), at));
+        }
+    }
+    None
+}
+
+fn read_registry_entry(path: &Path) -> Option<RegistryEntry> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    let session_id = value.get("sessionId")?.as_str()?.to_string();
+    let cwd = value.get("cwd")?.as_str()?.to_string();
+    let pid = value.get("pid")?.as_u64()? as u32;
+    let status = value
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("idle")
+        .to_string();
+    let proc_start = value
+        .get("procStart")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let title = value
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    // Heartbeats are epoch milliseconds (observed against 2.1.224).
+    let updated_at = value.get("updatedAt").and_then(Value::as_i64).unwrap_or(0);
+    let status_updated_at = value
+        .get("statusUpdatedAt")
+        .and_then(Value::as_i64)
+        .unwrap_or(updated_at);
+    Some(RegistryEntry {
+        session_id,
+        cwd,
+        title,
+        status,
+        pid,
+        proc_start,
+        updated_at,
+        status_updated_at,
+    })
+}
+
+/// Map a registry entry to activity.
+///
+/// Claude Code's `status` is two-valued (`busy` / `idle`). A permission
+/// prompt still reads `busy`, so **Blocked cannot be reported** from this
+/// source. Inventing a heuristic (unmatched `tool_use` + quiet transcript)
+/// is available but lower-confidence; under-claiming is the standing rule,
+/// so busy always maps to `Working` rather than falsely claiming Blocked.
+fn activity_from_registry(reg: &RegistryEntry) -> AgentActivity {
+    if !process_is_alive(reg.pid, reg.proc_start.as_deref(), reg.status_updated_at) {
+        return AgentActivity::Stale;
+    }
+    match reg.status.as_str() {
+        "busy" => AgentActivity::Working { detail: None },
+        "idle" => AgentActivity::Idle,
+        // Unknown status values degrade to Idle rather than guessing busy.
+        _ => AgentActivity::Idle,
+    }
+}
+
+/// Is the process at `pid` still the one that wrote this registry entry?
+///
+/// On Linux, `/proc/<pid>` existing is the liveness check; `procStart` (the
+/// kernel start-time tick from `/proc/<pid>/stat` field 22) guards against
+/// PID reuse when present. On non-Linux there is no `/proc`, so the
+/// documented fallback is heartbeat freshness using `statusUpdatedAt`.
+fn process_is_alive(pid: u32, proc_start: Option<&str>, status_updated_at: i64) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = status_updated_at;
+        let proc_dir = PathBuf::from(format!("/proc/{pid}"));
+        if !proc_dir.is_dir() {
+            return false;
+        }
+        if let Some(expected) = proc_start {
+            if let Some(actual) = linux_proc_start(pid) {
+                return actual == expected;
+            }
+        }
+        true
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (pid, proc_start);
+        let now = now_millis();
+        now.saturating_sub(status_updated_at) <= HEARTBEAT_STALE_MS
+    }
+}
+
+/// Kernel start-time ticks for `pid` (`/proc/<pid>/stat` field 22), when
+/// readable. Compared to the registry's `procStart` to defeat PID reuse.
+#[cfg(target_os = "linux")]
+fn linux_proc_start(pid: u32) -> Option<String> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // `stat` is `pid (comm) state ppid ... starttime ...`. `comm` can hold
+    // spaces and parentheses, so split on the final `) ` and then take the
+    // 20th field of what remains (1-indexed field 22 overall = index 19
+    // after the state field that follows `)`).
+    let after_comm = stat.rsplit_once(") ")?.1;
+    after_comm.split_whitespace().nth(19).map(str::to_string)
+}
+
+fn now_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 impl ClaudeCode {
@@ -716,6 +904,7 @@ mod tests {
             agent: AgentKind::ClaudeCode,
             title: None,
             last_activity: 0,
+            activity: AgentActivity::Stale,
         }
     }
 
@@ -810,14 +999,24 @@ mod tests {
         assert_eq!(ids, vec!["default", "odd"]);
     }
 
+    /// Strip activity transitions so tailing assertions stay about the
+    /// transcript. Without a registry entry the first poll emits Stale once.
+    fn tool_events(events: &[AgentEvent]) -> Vec<&AgentEvent> {
+        events
+            .iter()
+            .filter(|event| !matches!(event, AgentEvent::ActivityChanged { .. }))
+            .collect()
+    }
+
     #[test]
     fn first_poll_starts_at_the_end_rather_than_replaying_history() {
         let id = "1111aaaa-0000-4000-8000-000000000001";
         let (_dir, roots, file) = transcript_tree(BASIC, id);
 
         let mut provider = ClaudeCode::new();
+        let first = provider.poll(workspace(), &session(id), &roots);
         assert!(
-            provider.poll(workspace(), &session(id), &roots).is_empty(),
+            tool_events(&first).is_empty(),
             "opening a workspace mid-task must not flood the feed"
         );
 
@@ -833,9 +1032,10 @@ mod tests {
         std::io::Write::write_all(&mut handle, appended.as_bytes()).unwrap();
 
         let events = provider.poll(workspace(), &session(id), &roots);
-        assert_eq!(events.len(), 1);
+        let tools = tool_events(&events);
+        assert_eq!(tools.len(), 1);
         assert!(matches!(
-            &events[0],
+            tools[0],
             AgentEvent::ToolCall { paths, .. } if paths == &["late.rs".to_string()]
         ));
     }
@@ -859,7 +1059,11 @@ mod tests {
 
         std::fs::write(&file, format!("{whole}\n")).unwrap();
         let events = provider.poll(workspace(), &session(id), &roots);
-        assert_eq!(events.len(), 1, "and must arrive whole once complete");
+        assert_eq!(
+            tool_events(&events).len(),
+            1,
+            "and must arrive whole once complete"
+        );
         assert!(!tail.is_empty());
     }
 
@@ -882,7 +1086,7 @@ mod tests {
         .unwrap();
 
         let events = provider.poll(workspace(), &session(id), &roots);
-        assert_eq!(events.len(), 1);
+        assert_eq!(tool_events(&events).len(), 1);
     }
 
     #[test]
@@ -1003,8 +1207,165 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let roots = vec![root.path().to_path_buf()];
         assert!(ClaudeCode::new().discover(workspace(), &roots).is_empty());
-        assert!(ClaudeCode::new()
+        // No registry either: first poll surfaces Stale once, then silence.
+        let mut provider = ClaudeCode::new();
+        let first = provider.poll(workspace(), &session("nope"), &roots);
+        assert!(matches!(
+            &first[..],
+            [AgentEvent::ActivityChanged {
+                activity: AgentActivity::Stale,
+                ..
+            }]
+        ));
+        assert!(provider
             .poll(workspace(), &session("nope"), &roots)
             .is_empty());
+    }
+
+    // -- live session registry ----------------------------------------------
+
+    /// Write a registry entry under `<root>/sessions/<pid>.json`.
+    fn write_registry(root: &Path, pid: u32, body: &str) {
+        let dir = root.join("sessions");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("{pid}.json")), body).unwrap();
+    }
+
+    /// A synthetic registry file. Paths and ids are invented — never real.
+    fn registry_json(pid: u32, session_id: &str, cwd: &str, status: &str) -> String {
+        format!(
+            r#"{{
+                "pid": {pid},
+                "sessionId": "{session_id}",
+                "cwd": "{cwd}",
+                "startedAt": 1786121838290,
+                "procStart": "1",
+                "version": "2.1.224",
+                "kind": "interactive",
+                "entrypoint": "cli",
+                "name": "project-63",
+                "status": "{status}",
+                "updatedAt": 1786122165624,
+                "statusUpdatedAt": 1786122165624
+            }}"#
+        )
+    }
+
+    /// A live registry entry for this test process. Heartbeats use *now* so
+    /// the non-Linux freshness fallback also treats the session as alive;
+    /// on Linux, `procStart` matches `/proc/self`.
+    fn live_registry_json(session_id: &str, status: &str) -> String {
+        let me = std::process::id();
+        let start = linux_start_for_tests(me);
+        let now = now_millis();
+        format!(
+            r#"{{
+                "pid": {me},
+                "sessionId": "{session_id}",
+                "cwd": "/work/demo",
+                "startedAt": {now},
+                "procStart": "{start}",
+                "version": "2.1.224",
+                "kind": "interactive",
+                "entrypoint": "cli",
+                "name": "project-63",
+                "status": "{status}",
+                "updatedAt": {now},
+                "statusUpdatedAt": {now}
+            }}"#
+        )
+    }
+
+    #[test]
+    fn registry_busy_maps_to_working() {
+        // busy is the only live "doing something" signal Claude Code exposes.
+        // It cannot mean Blocked — a permission prompt still reads busy — so
+        // Working is the honest under-claim.
+        let root = tempfile::tempdir().unwrap();
+        let me = std::process::id();
+        write_registry(root.path(), me, &live_registry_json("live-busy", "busy"));
+
+        let found = ClaudeCode::new().discover(workspace(), &[root.path().to_path_buf()]);
+        let live = found
+            .iter()
+            .find(|s| s.id == "live-busy")
+            .expect("registry session");
+        assert_eq!(
+            live.activity,
+            AgentActivity::Working { detail: None },
+            "busy → Working; never Blocked from Claude Code"
+        );
+    }
+
+    #[test]
+    fn registry_idle_maps_to_idle() {
+        let root = tempfile::tempdir().unwrap();
+        let me = std::process::id();
+        write_registry(root.path(), me, &live_registry_json("live-idle", "idle"));
+
+        let found = ClaudeCode::new().discover(workspace(), &[root.path().to_path_buf()]);
+        let live = found
+            .iter()
+            .find(|s| s.id == "live-idle")
+            .expect("registry session");
+        assert_eq!(live.activity, AgentActivity::Idle);
+    }
+
+    #[test]
+    fn registry_dead_pid_maps_to_stale() {
+        // A registry file whose process is gone is a stale session, not a
+        // live one. A non-existent PID with a cold heartbeat covers both
+        // Linux (/proc missing) and the non-Linux freshness fallback.
+        let root = tempfile::tempdir().unwrap();
+        write_registry(
+            root.path(),
+            4_294_967_294,
+            &registry_json(4_294_967_294, "dead-session", "/work/demo", "busy"),
+        );
+
+        let found = ClaudeCode::new().discover(workspace(), &[root.path().to_path_buf()]);
+        let dead = found
+            .iter()
+            .find(|s| s.id == "dead-session")
+            .expect("stale registry entry still surfaces");
+        assert_eq!(dead.activity, AgentActivity::Stale);
+    }
+
+    #[test]
+    fn registry_is_primary_slug_fills_in_the_rest() {
+        let root = tempfile::tempdir().unwrap();
+        // Transcript-only (no live process).
+        let projects = root.path().join("projects").join(slug_for(workspace()));
+        std::fs::create_dir_all(&projects).unwrap();
+        std::fs::write(projects.join("old-only.jsonl"), BASIC).unwrap();
+
+        // Live registry session with no transcript yet.
+        let me = std::process::id();
+        write_registry(root.path(), me, &live_registry_json("brand-new", "busy"));
+
+        let found = ClaudeCode::new().discover(workspace(), &[root.path().to_path_buf()]);
+        let mut ids: Vec<&str> = found.iter().map(|s| s.id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec!["brand-new", "old-only"]);
+        let old = found.iter().find(|s| s.id == "old-only").unwrap();
+        assert_eq!(
+            old.activity,
+            AgentActivity::Stale,
+            "transcript without a live process is Stale"
+        );
+    }
+
+    /// `procStart` for this process on Linux; a dummy on other hosts where
+    /// the heartbeat fallback is what decides liveness.
+    fn linux_start_for_tests(pid: u32) -> String {
+        #[cfg(target_os = "linux")]
+        {
+            linux_proc_start(pid).unwrap_or_else(|| "0".into())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = pid;
+            "0".into()
+        }
     }
 }

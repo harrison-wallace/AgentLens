@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-07
+
+Groundwork release. The activity state and the Grok provider are wired through
+the backend and the protocol, but no part of the UI consumes them yet — the
+visible change is that Settings now recognises `~/.grok` as an agent root. The
+header activity indicator, session panel, and agent attribution in the feed
+follow in the next releases.
+
+### Added
+
+- **Grok is now a supported agent, alongside Claude Code.** AgentLens finds
+  Grok sessions under `~/.grok/sessions/`, decodes the percent-encoded working
+  directory to tell which ones belong to the open workspace, and tails their
+  `events.jsonl` stream. Grok publishes a typed event log rather than a
+  conversation transcript, so tool calls and session boundaries are read
+  directly instead of reconstructed. That log carries tool _names_ only —
+  never arguments, prompts, or file contents — so nothing sensitive is read to
+  produce the activity view.
+- **Live agent activity state.** Sessions now report what the agent is doing
+  right now — working, blocked on a permission prompt, idle, or stale — rather
+  than only what it did. The four states are deliberate: "blocked" needs you
+  and is urgent, "idle" is restful, and "stale" means the session is over, so
+  collapsing them into one "not running" would hide the only one that matters.
+  Grok reports its phase directly; Claude Code's is derived from its session
+  registry. Where a provider cannot tell the difference it under-claims rather
+  than guessing, so a wrong state is never shown in place of a missing one.
+- **Claude Code sessions are found by their live registry.** Discovery now
+  reads `<config-root>/sessions/<pid>.json` first, which answers which
+  sessions are running, in which directory, and whether they are busy — from
+  one small file per process, with a PID-reuse-safe liveness check. The
+  previous slug-based transcript scan remains as the fallback for sessions
+  whose process has exited, which are reported as stale.
+
+### Changed
+
+- **The second agent provider is Grok rather than opencode.** opencode moves
+  to the roadmap. Grok is both the agent in daily use here and the harder test
+  of the provider abstraction: its typed event stream is a structurally
+  different transport from Claude Code's transcript, so an abstraction that
+  serves both is proven rather than merely reused.
+- Workspace matching and bounded tail reads are now shared by every provider
+  instead of living inside one, so the rule for "does this session belong to
+  this workspace" cannot drift between agents, and no provider reads a whole
+  session file that grows for as long as the agent runs.
+
+### Removed
+
+- The unused `opencode` agent kind. Nothing implemented it, so no session,
+  setting, or stored state referred to it.
+
 ## [0.6.0] - 2026-08-07
 
 ### Added
