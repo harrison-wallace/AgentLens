@@ -548,15 +548,30 @@ mod tests {
             .collect()
     }
 
-    /// Write a synthetic Grok session under `agent_root` for `workspace`.
-    /// Fresh mtime → discovery treats it as live within the recency window.
-    fn write_live_grok_session(agent_root: &Path, workspace: &Path, session_id: &str) {
+    /// The workspace root as the engine will see it.
+    ///
+    /// `workspace::open` canonicalizes what it is given, and Grok's session
+    /// directory name is that path percent-encoded — so a fixture built from
+    /// the raw temp path is never matched and discovery finds nothing. On
+    /// Linux canonicalize is usually the identity, which is exactly why
+    /// encoding the raw path passed locally and failed on Windows, where it
+    /// also resolves 8.3 short names and prepends `\\?\`.
+    fn canonical_root(path: &Path) -> PathBuf {
+        std::fs::canonicalize(path).expect("workspace tempdir must exist")
+    }
+
+    /// Write a synthetic Grok session under `agent_root` for `workspace` and
+    /// return its `events.jsonl`. Fresh mtime → discovery treats it as live
+    /// within the recency window.
+    fn write_live_grok_session(agent_root: &Path, workspace: &Path, session_id: &str) -> PathBuf {
         let dir = agent_root
             .join("sessions")
-            .join(percent_encode_path(workspace))
+            .join(percent_encode_path(&canonical_root(workspace)))
             .join(session_id);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("events.jsonl"), "").unwrap();
+        let events = dir.join("events.jsonl");
+        std::fs::write(&events, "").unwrap();
+        events
     }
 
     /// Records what the engine pushes, so tests can assert on emissions
@@ -846,7 +861,7 @@ mod tests {
     fn discovery_of_a_live_session_emits_exactly_one_session_started() {
         let workspace = tempfile::tempdir().unwrap();
         let agent_root = tempfile::tempdir().unwrap();
-        write_live_grok_session(agent_root.path(), workspace.path(), "sess-appear");
+        let _ = write_live_grok_session(agent_root.path(), workspace.path(), "sess-appear");
 
         let (engine, sink) = engine();
         engine
@@ -910,7 +925,7 @@ mod tests {
     fn session_turning_stale_emits_exactly_one_session_ended() {
         let workspace = tempfile::tempdir().unwrap();
         let agent_root = tempfile::tempdir().unwrap();
-        write_live_grok_session(agent_root.path(), workspace.path(), "sess-end");
+        let events_file = write_live_grok_session(agent_root.path(), workspace.path(), "sess-end");
 
         let (engine, sink) = engine();
         engine
@@ -947,12 +962,6 @@ mod tests {
 
         // Age the session past Grok's freshness window so discover marks it
         // Stale — that is the same path as "disappeared" for lifecycle.
-        let events_file = agent_root
-            .path()
-            .join("sessions")
-            .join(percent_encode_path(workspace.path()))
-            .join("sess-end")
-            .join("events.jsonl");
         // Bare epoch-second ts → normalize_ts scales to ms far in the past.
         std::fs::write(
             &events_file,
