@@ -25,7 +25,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
-use super::{is_within_workspace, read_tail, AgentProvider, ParseStats};
+use super::{has_json_children, is_within_workspace, read_tail, AgentProvider, ParseStats};
 use crate::paths::to_workspace_relative;
 use crate::protocol::{AgentActivity, AgentEvent, AgentKind, SessionRef};
 
@@ -42,6 +42,13 @@ const MAX_EVENTS_PER_POLL: usize = 500;
 /// correct when the session is *still sitting in* that phase — no later
 /// event for longer than this threshold.
 const PERMISSION_PROMPT_DWELL_MS: i64 = 1000;
+
+/// How recently a Grok session must have been written to for discovery to
+/// treat it as live. There is no live-process signal for Grok yet, so
+/// recency is the only honest one; five minutes mirrors the heartbeat
+/// fallback in claude.rs. Prefer under-claiming: a session wrongly shown
+/// as live is worse than one missing for a few seconds.
+const FRESH_WINDOW_MS: i64 = 5 * 60 * 1000;
 
 /// Major `schema_version` this provider understands. Anything whose major
 /// does not match is skipped entirely for that session.
@@ -156,10 +163,15 @@ fn ts_of(value: &Value) -> i64 {
         .unwrap_or(0)
 }
 
-/// Does `dir` look like a Grok root? `sessions/` is the load-bearing part —
-/// mirrors how Claude Code requires `projects/`.
+/// Does `dir` look like a Grok root?
+///
+/// Grok's registry is directories under `sessions/`
+/// (`sessions/<percent-encoded-cwd>/<session-id>/`); Claude's is files
+/// (`sessions/<pid>.json`). A bare `sessions/` check claims Claude's root
+/// too, so reject any root whose sessions dir holds `*.json` files.
 fn looks_like_root(dir: &Path) -> bool {
-    dir.join("sessions").is_dir()
+    let sessions = dir.join("sessions");
+    sessions.is_dir() && !has_json_children(&sessions)
 }
 
 fn home_dir() -> Option<PathBuf> {
@@ -227,6 +239,7 @@ impl AgentProvider for Grok {
     }
 
     fn discover(&self, workspace: &Path, roots: &[PathBuf]) -> Vec<SessionRef> {
+        let now = now_millis();
         let mut sessions = Vec::new();
         for root in roots {
             let sessions_dir = root.join("sessions");
@@ -257,16 +270,27 @@ impl AgentProvider for Grok {
                     }
                     let id = session_entry.file_name().to_string_lossy().into_owned();
                     let last_activity = file_last_activity(&events_file);
+                    // No live-process signal for Grok; recency is the only
+                    // honest liveness check. Prefer under-claiming.
+                    let activity = if now.saturating_sub(last_activity) <= FRESH_WINDOW_MS {
+                        AgentActivity::Idle
+                    } else {
+                        AgentActivity::Stale
+                    };
+                    // Stale sessions are never rendered (selectLiveSessions
+                    // filters them), so reading summary.json is pure I/O on
+                    // a one-second discover tick — skip it for the dead ones.
+                    let title = if activity == AgentActivity::Stale {
+                        None
+                    } else {
+                        summary_title(&session_path)
+                    };
                     sessions.push(SessionRef {
                         id,
                         agent: AgentKind::Grok,
-                        title: None,
+                        title,
                         last_activity,
-                        // Discovery has no live process signal for Grok yet;
-                        // activity is refined by poll as events stream in.
-                        // A session with a recent file is presumed Idle until
-                        // a phase says otherwise.
-                        activity: AgentActivity::Idle,
+                        activity,
                     });
                 }
             }
@@ -396,12 +420,8 @@ impl Grok {
                     self.relationship
                         .insert(session.id.clone(), rel.to_string());
                 }
-                out.push(AgentEvent::SessionStarted {
-                    session_id: session_id.clone(),
-                    agent: AgentKind::Grok,
-                    title: None,
-                    at,
-                });
+                // Lifecycle is owned by the poller (discover set diff), not
+                // by per-event guesses — a turn start is not a session start.
             }
             "tool_started" | "tool_completed" => {
                 let tool = record
@@ -468,7 +488,8 @@ impl Grok {
                 if let Some(event) = self.emit_activity(&session_id, at, AgentActivity::Idle) {
                     out.push(event);
                 }
-                out.push(AgentEvent::SessionEnded { session_id, at });
+                // A turn ending is not a session ending: the session is idle,
+                // waiting for the next prompt, and must stay visible.
             }
             // Known but not mapped to protocol events — count as seen, skip.
             "permission_requested"
@@ -638,6 +659,22 @@ fn file_last_activity(path: &Path) -> i64 {
         .unwrap_or(0)
 }
 
+/// Generated session title from `summary.json`, when present and well-formed.
+///
+/// This file is not a stable API — missing, empty, or malformed means
+/// `None`, never an error. Only `session_summary` is read; no prompts or
+/// message content. Same category as Claude Code's `ai-title`.
+fn summary_title(session_dir: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(session_dir.join("summary.json")).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    let summary = value.get("session_summary")?.as_str()?.trim();
+    if summary.is_empty() {
+        None
+    } else {
+        Some(summary.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -753,6 +790,81 @@ mod tests {
         assert!(Grok::new().claims_root(dir.path()));
     }
 
+    #[test]
+    fn discovery_treats_a_recent_session_as_idle_and_an_old_one_as_stale() {
+        // There is no live-process signal for Grok, so recency is the only
+        // liveness test there is. Without it every session ever run in a
+        // workspace stays listed as live forever — which is what shipped.
+        let recent = format!(
+            r#"{{"type":"phase_changed","ts":{},"phase":"streaming_text"}}"#,
+            now_millis()
+        );
+        let (_fresh_dir, fresh_roots, _) = session_tree(&recent, "sess-fresh", "/home/dev/project");
+        let found = Grok::new().discover(workspace(), &fresh_roots);
+        assert_eq!(found[0].activity, AgentActivity::Idle, "{found:?}");
+
+        // Same shape, last event in 1970.
+        let (_old_dir, old_roots, _) = session_tree(
+            r#"{"type":"phase_changed","ts":1,"phase":"streaming_text"}"#,
+            "sess-old",
+            "/home/dev/project",
+        );
+        let found = Grok::new().discover(workspace(), &old_roots);
+        assert_eq!(found[0].activity, AgentActivity::Stale, "{found:?}");
+    }
+
+    #[test]
+    fn session_title_comes_from_summary_json_and_tolerates_its_absence() {
+        // Fresh event so the session is Idle; titles are only read for
+        // non-stale sessions (see discover).
+        let recent = format!(
+            r#"{{"type":"phase_changed","ts":{},"phase":"streaming_text"}}"#,
+            now_millis()
+        );
+        let (dir, roots, events) = session_tree(&recent, "sess-title", "/home/dev/project");
+        // No summary.json beside the events file → untitled, never an error.
+        assert_eq!(Grok::new().discover(workspace(), &roots)[0].title, None);
+
+        let session_dir = events.parent().unwrap();
+        std::fs::write(
+            session_dir.join("summary.json"),
+            r#"{"session_summary":"  Fix the pin button  ","info":{"id":"sess-title"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            Grok::new().discover(workspace(), &roots)[0]
+                .title
+                .as_deref(),
+            Some("Fix the pin button"),
+        );
+
+        // Malformed is the same as absent — this file is not a stable API.
+        std::fs::write(session_dir.join("summary.json"), "{not json").unwrap();
+        assert_eq!(Grok::new().discover(workspace(), &roots)[0].title, None);
+        drop(dir);
+    }
+
+    #[test]
+    fn stale_session_is_discovered_without_reading_its_title() {
+        // Last event in 1970 → outside the freshness window. A well-formed
+        // summary.json must still yield title: None — discover is on a
+        // one-second tick and stale sessions are never rendered.
+        let (_dir, roots, events) = session_tree(
+            r#"{"type":"phase_changed","ts":1,"phase":"streaming_text"}"#,
+            "sess-stale-title",
+            "/home/dev/project",
+        );
+        let session_dir = events.parent().unwrap();
+        std::fs::write(
+            session_dir.join("summary.json"),
+            r#"{"session_summary":"Should not be read","info":{"id":"sess-stale-title"}}"#,
+        )
+        .unwrap();
+        let found = Grok::new().discover(workspace(), &roots);
+        assert_eq!(found[0].activity, AgentActivity::Stale, "{found:?}");
+        assert_eq!(found[0].title, None, "{found:?}");
+    }
+
     // -- tailing ------------------------------------------------------------
 
     #[test]
@@ -784,8 +896,8 @@ mod tests {
         assert!(
             first
                 .iter()
-                .any(|e| matches!(e, AgentEvent::SessionStarted { .. })),
-            "turn_started → SessionStarted: {first:?}"
+                .all(|e| !matches!(e, AgentEvent::SessionStarted { .. })),
+            "turn_started must not emit SessionStarted (poller owns lifecycle): {first:?}"
         );
         assert!(
             first.iter().any(|e| matches!(
@@ -911,25 +1023,34 @@ mod tests {
         std::fs::write(&file, EVENTS).unwrap();
         let events = provider.poll(workspace(), &session(id), &roots);
 
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, AgentEvent::SessionStarted { .. })));
+        assert!(
+            events
+                .iter()
+                .all(|e| !matches!(e, AgentEvent::SessionStarted { .. })),
+            "turn_started must not emit SessionStarted: {events:?}"
+        );
         // No chat_history beside the fixture → empty paths, never an error.
         assert!(events.iter().any(|e| matches!(
             e,
             AgentEvent::ToolCall { tool, paths, .. }
                 if tool == "search_replace" && paths.is_empty()
         )));
-        assert!(events.iter().any(|e| matches!(
-            e,
-            AgentEvent::ActivityChanged {
-                activity: AgentActivity::Idle,
-                ..
-            }
-        )));
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, AgentEvent::SessionEnded { .. })));
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                AgentEvent::ActivityChanged {
+                    activity: AgentActivity::Idle,
+                    ..
+                }
+            )),
+            "turn_ended → ActivityChanged Idle: {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .all(|e| !matches!(e, AgentEvent::SessionEnded { .. })),
+            "turn_ended must not emit SessionEnded (session stays visible): {events:?}"
+        );
     }
 
     // -- chat_history path extraction ---------------------------------------

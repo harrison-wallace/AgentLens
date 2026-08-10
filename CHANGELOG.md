@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-08-10
+
+Agent attribution shipped in 0.8.0; running it against a machine with real
+history showed the session list was wrong in both directions at once. This
+release makes the header and session panel tell the truth.
+
+### Added
+
+- **Grok sessions carry their title.** Every Grok row rendered as "untitled",
+  which made concurrent sessions impossible to tell apart. The generated
+  session summary is now read from the session's own metadata and shown
+  instead — the same category of information as Claude Code's session title,
+  with no prompt or message content read.
+
+### Fixed
+
+- **A Claude Code session started after the workspace was already open never
+  appeared.** Session lifecycle was left to each provider to volunteer, and
+  Claude Code volunteered nothing, so the header chip and session-panel row
+  never arrived — for the life of the workspace. Its file changes were still
+  attributed correctly in the feed, which is why this hid. The backend poller
+  now derives the session list from what it discovers each second, so both
+  providers are tracked the same way.
+- **Grok sessions vanished at the end of every turn.** A finished turn was
+  treated as a finished session, so a live agent you were mid-conversation
+  with disappeared from the header and panel until you sent the next prompt.
+  A turn ending now means idle, which is a state you can see.
+- **Grok sessions never went stale.** Every session ever run in a workspace
+  was reported as live, forever — a workspace with history showed a dozen
+  dead agents as current, and the one that was actually running was lost
+  among them. Sessions now go stale once their event stream stops changing.
+- **Every Claude Code session went stale after five minutes on Windows.**
+  Liveness there fell back to a heartbeat in the session registry, but that
+  timestamp only moves when the status changes — so a session sitting idle
+  waiting for input, or busy on a long task, was declared dead and vanished
+  while still running. Windows now asks the operating system whether the
+  process is alive. Linux, which already checked properly, is unchanged.
+- **The two agents claimed each other's directories.** Both keep a
+  `sessions/` folder, so settings labelled the Grok root as Claude Code —
+  misleading in the one place that exists to explain where sessions are found.
+- **Dead sessions no longer cost anything.** They were tailed once a second
+  alongside live ones, the session registry was re-read once per session
+  rather than once per tick, and agent directories were re-detected every
+  second. On a remote workspace all of that ran on the remote machine.
+
 ## [0.8.0] - 2026-08-07
 
 Agent attribution ships. AgentLens no longer just shows _that_ a file changed —

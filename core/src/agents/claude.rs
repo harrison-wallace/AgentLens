@@ -39,7 +39,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
-use super::{epoch_millis, is_within_workspace, read_tail, AgentProvider, ParseStats};
+use super::{
+    epoch_millis, has_dir_children, is_within_workspace, read_tail, AgentProvider, ParseStats,
+};
 use crate::paths::to_workspace_relative;
 use crate::protocol::{AgentActivity, AgentEvent, AgentKind, SessionRef};
 
@@ -51,10 +53,13 @@ const MAX_EVENTS_PER_POLL: usize = 500;
 /// command, and what it touched is left to the correlation engine.
 const PATH_INPUT_KEYS: [&str; 2] = ["file_path", "path"];
 
-/// How long a registry heartbeat may lag before a non-Linux host treats the
-/// session as dead. Linux uses `/proc/<pid>` instead; this is only the
-/// documented fallback where that check is unavailable.
-#[cfg(not(target_os = "linux"))]
+/// How long a registry heartbeat may lag before a host without a real process
+/// check treats the session as dead. Linux and Windows use `/proc` /
+/// `OpenProcess`; this is only for other unix where neither is available.
+///
+/// `statusUpdatedAt` only moves on a status *transition*, not a clock, so it
+/// is not a liveness signal — kept solely as a last-resort fallback.
+#[cfg(not(any(target_os = "linux", windows)))]
 const HEARTBEAT_STALE_MS: i64 = 5 * 60 * 1000;
 
 #[derive(Default)]
@@ -138,11 +143,13 @@ fn detected_profiles() -> Vec<PathBuf> {
     roots
 }
 
-/// A directory with the shape of a Claude Code profile. `projects/` is the
-/// load-bearing part: it keeps `~/.claude.json` (a file) and an unrelated
-/// `.claude-*` directory from contributing phantom sessions.
+/// A directory with the shape of a Claude Code profile.
+///
+/// `projects/` alone also matches a Grok root (`~/.grok/projects` exists on
+/// some installs). Claude's registry holds *files* under `sessions/`; Grok's
+/// holds directories — so a `sessions/` with dir children is not Claude.
 fn looks_like_profile(dir: &Path) -> bool {
-    dir.join("projects").is_dir()
+    dir.join("projects").is_dir() && !has_dir_children(&dir.join("sessions"))
 }
 
 fn home_dir() -> Option<PathBuf> {
@@ -423,28 +430,21 @@ impl AgentProvider for ClaudeCode {
     ) -> Vec<AgentEvent> {
         let mut events = Vec::new();
 
-        // Activity is driven by the registry, not the transcript: status is
-        // two-valued and lives in the small per-pid file. Re-check every poll
-        // so a busy→idle flip surfaces even when the transcript is quiet.
-        if let Some((activity, at)) = registry_activity_for(&session.id, roots) {
-            if self.last_activity.get(&session.id) != Some(&activity) {
-                self.last_activity
-                    .insert(session.id.clone(), activity.clone());
-                events.push(AgentEvent::ActivityChanged {
-                    session_id: session.id.clone(),
-                    at,
-                    activity,
-                });
-            }
-        } else if self.last_activity.get(&session.id) != Some(&AgentActivity::Stale) {
-            // No live registry entry → process is gone.
-            let at = now_millis();
+        // Activity rides on the SessionRef the poller just built via
+        // discover — re-reading every sessions/*.json here was O(n²) per tick
+        // and redundant with the registry walk discover already did.
+        if self.last_activity.get(&session.id) != Some(&session.activity) {
             self.last_activity
-                .insert(session.id.clone(), AgentActivity::Stale);
+                .insert(session.id.clone(), session.activity.clone());
+            let at = if session.last_activity > 0 {
+                session.last_activity
+            } else {
+                now_millis()
+            };
             events.push(AgentEvent::ActivityChanged {
                 session_id: session.id.clone(),
                 at,
-                activity: AgentActivity::Stale,
+                activity: session.activity.clone(),
             });
         }
 
@@ -548,32 +548,6 @@ fn registry_sessions(workspace: &Path, roots: &[PathBuf]) -> Vec<SessionRef> {
     out
 }
 
-/// Current activity for `session_id` from any root's registry, if a live
-/// entry still exists.
-fn registry_activity_for(session_id: &str, roots: &[PathBuf]) -> Option<(AgentActivity, i64)> {
-    for root in roots {
-        let sessions_dir = root.join("sessions");
-        let Ok(entries) = std::fs::read_dir(&sessions_dir) else {
-            continue;
-        };
-        for entry in entries.filter_map(|e| e.ok()) {
-            let path = entry.path();
-            if path.extension().is_none_or(|ext| ext != "json") {
-                continue;
-            }
-            let Some(reg) = read_registry_entry(&path) else {
-                continue;
-            };
-            if reg.session_id != session_id {
-                continue;
-            }
-            let at = reg.status_updated_at.max(reg.updated_at);
-            return Some((activity_from_registry(&reg), at));
-        }
-    }
-    None
-}
-
 fn read_registry_entry(path: &Path) -> Option<RegistryEntry> {
     let text = std::fs::read_to_string(path).ok()?;
     let value: Value = serde_json::from_str(&text).ok()?;
@@ -632,10 +606,17 @@ fn activity_from_registry(reg: &RegistryEntry) -> AgentActivity {
 
 /// Is the process at `pid` still the one that wrote this registry entry?
 ///
-/// On Linux, `/proc/<pid>` existing is the liveness check; `procStart` (the
-/// kernel start-time tick from `/proc/<pid>/stat` field 22) guards against
-/// PID reuse when present. On non-Linux there is no `/proc`, so the
-/// documented fallback is heartbeat freshness using `statusUpdatedAt`.
+/// Three platforms, three answers:
+/// - **Linux**: `/proc/<pid>` exists, and `procStart` matches field 22 of
+///   `/proc/<pid>/stat` when present (PID-reuse guard).
+/// - **Windows**: `OpenProcess` + zero-duration `WaitForSingleObject` — a
+///   live process never signals, so the wait times out. Avoids the
+///   `GetExitCodeProcess` / `STILL_ACTIVE` (259) trap, where a real exit
+///   code of 259 would otherwise read as alive.
+/// - **Other unix**: no portable process check without `libc`; fall back to
+///   the `statusUpdatedAt` window. That field only moves on a status
+///   *transition*, not a clock, so it is a weak liveness signal — kept only
+///   where nothing better exists.
 fn process_is_alive(pid: u32, proc_start: Option<&str>, status_updated_at: i64) -> bool {
     #[cfg(target_os = "linux")]
     {
@@ -651,7 +632,41 @@ fn process_is_alive(pid: u32, proc_start: Option<&str>, status_updated_at: i64) 
         }
         true
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(windows)]
+    {
+        let _ = (proc_start, status_updated_at);
+        use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        // `WaitForSingleObject` requires SYNCHRONIZE on the handle, which
+        // PROCESS_QUERY_LIMITED_INFORMATION does not grant — without it the
+        // wait returns WAIT_FAILED and *every* session reads as dead. Not
+        // imported from windows-sys: that crate files SYNCHRONIZE under
+        // `Storage::FileSystem`, and enabling that whole feature module for
+        // one integer is not worth it. The value is a fixed part of the NT
+        // ABI (cross-checked against windows-sys 0.59: 1048576).
+        const SYNCHRONIZE: u32 = 0x0010_0000;
+
+        // Null handle means the process is gone (or we lack rights — either
+        // way we cannot claim it is alive). Non-null handle is always closed
+        // below so a live pid cannot leak a kernel object per poll.
+        let handle =
+            unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, 0, pid) };
+        if handle.is_null() {
+            return false;
+        }
+        // Zero-duration wait: a live process never signals, so it times out.
+        // No STILL_ACTIVE (259) ambiguity with a real exit code of 259.
+        // Anything else — including WAIT_FAILED — counts as dead, which is
+        // the under-claiming direction this module always errs in.
+        let alive = unsafe { WaitForSingleObject(handle, 0) } == WAIT_TIMEOUT;
+        unsafe {
+            CloseHandle(handle);
+        }
+        alive
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
     {
         let _ = (pid, proc_start);
         let now = now_millis();
@@ -1207,9 +1222,12 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let roots = vec![root.path().to_path_buf()];
         assert!(ClaudeCode::new().discover(workspace(), &roots).is_empty());
-        // No registry either: first poll surfaces Stale once, then silence.
+        // Staleness is decided at discovery; poll surfaces whatever activity
+        // the SessionRef carries. First poll emits one ActivityChanged with
+        // the ref's own activity; second poll is silent.
         let mut provider = ClaudeCode::new();
-        let first = provider.poll(workspace(), &session("nope"), &roots);
+        let ref_session = session("nope");
+        let first = provider.poll(workspace(), &ref_session, &roots);
         assert!(matches!(
             &first[..],
             [AgentEvent::ActivityChanged {
@@ -1217,9 +1235,7 @@ mod tests {
                 ..
             }]
         ));
-        assert!(provider
-            .poll(workspace(), &session("nope"), &roots)
-            .is_empty());
+        assert!(provider.poll(workspace(), &ref_session, &roots).is_empty());
     }
 
     // -- live session registry ----------------------------------------------

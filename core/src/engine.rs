@@ -11,6 +11,7 @@
 //! the user's behalf. The engine is told its settings and forgets them when
 //! the process ends.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -25,8 +26,8 @@ use crate::agents::grok::Grok;
 use crate::agents::{self, AgentProvider};
 use crate::correlate::Correlator;
 use crate::protocol::{
-    AgentKind, AgentPoll, Command, CommandResult, Hello, SessionRef, WorkspaceInfo, CAPABILITIES,
-    PROTOCOL_VERSION,
+    AgentActivity, AgentEvent, AgentKind, AgentPoll, Command, CommandResult, Hello, SessionRef,
+    WorkspaceInfo, CAPABILITIES, PROTOCOL_VERSION,
 };
 use crate::settings::{self, SettingsState};
 use crate::snapshots::{self, SessionState};
@@ -354,7 +355,9 @@ impl Engine {
         ));
         // Snapshot agent_roots at start; SetAppSettings mid-session is rare
         // enough that re-reading every tick would buy little and couple the
-        // poller to SettingsState's lock. The next open picks up changes.
+        // poller to SettingsState's lock. Root detection is snapshotted for
+        // the same reason — resolve_roots walks the filesystem — so a profile
+        // directory created mid-session is picked up on the next open.
         if let Ok(app) = settings::current_app(&self.settings) {
             if let Ok(mut guard) = settings_app.lock() {
                 *guard = app;
@@ -362,25 +365,93 @@ impl Engine {
         }
 
         thread::spawn(move || {
-            // Sleep first so open_workspace returns before the first disk
-            // walk; a workspace with no agents stays silent either way.
+            // Live-session keys from the previous tick. Local to this thread
+            // so it dies with the poller generation and cannot leak across
+            // workspaces.
+            let mut prev_live: HashSet<(AgentKind, String)> = HashSet::new();
+
+            // Resolve once per poller generation — the settings snapshot
+            // above cannot change under us, so re-walking every second buys
+            // nothing (see comment on the settings_app snapshot).
+            let agent_roots = settings_app
+                .lock()
+                .map(|g| g.agent_roots.clone())
+                .unwrap_or_default();
+            let roots = agents::resolve_roots(&agent_roots);
+
+            // Sleep before the first discovery pass; a workspace with no
+            // agents stays silent either way. (Root resolution above already
+            // touched disk, but on this thread — open_workspace never waits
+            // on any of it.)
             loop {
                 thread::sleep(AGENT_POLL_INTERVAL);
                 if generation_handle.load(Ordering::SeqCst) != generation {
                     break;
                 }
 
-                let agent_roots = settings_app
-                    .lock()
-                    .map(|g| g.agent_roots.clone())
-                    .unwrap_or_default();
-                let roots = agents::resolve_roots(&agent_roots);
-
                 let Ok(mut guard) = agents.lock() else {
                     continue;
                 };
                 let sessions = guard.discover(&root, &roots);
+
+                // Lifecycle is owned here, derived from what discovery sees
+                // each tick — providers must not emit SessionStarted/Ended.
+                let now = workspace::now_millis();
+                let mut cur_live: HashSet<(AgentKind, String)> = HashSet::new();
+                let mut lifecycle = Vec::new();
+                for session in &sessions {
+                    if session.activity == AgentActivity::Stale {
+                        continue;
+                    }
+                    let key = (session.agent, session.id.clone());
+                    if !prev_live.contains(&key) {
+                        let at = if session.last_activity > 0 {
+                            session.last_activity
+                        } else {
+                            now
+                        };
+                        lifecycle.push(AgentEvent::SessionStarted {
+                            session_id: session.id.clone(),
+                            agent: session.agent,
+                            title: session.title.clone(),
+                            at,
+                        });
+                        // SessionStarted carries no activity, and the store
+                        // assumes `working` for one — so say what discovery
+                        // actually found. Without this an idle session shows
+                        // as working until something else moves it, and a
+                        // quiet Grok session emits nothing to correct it.
+                        lifecycle.push(AgentEvent::ActivityChanged {
+                            session_id: session.id.clone(),
+                            at,
+                            activity: session.activity.clone(),
+                        });
+                    }
+                    cur_live.insert(key);
+                }
+                for (_agent, session_id) in prev_live.difference(&cur_live) {
+                    lifecycle.push(AgentEvent::SessionEnded {
+                        session_id: session_id.clone(),
+                        at: now,
+                    });
+                }
+                prev_live = cur_live;
+
+                // Lifecycle batch first, its own emit: the frontend store only
+                // updates sessions it already holds, so SessionStarted must
+                // arrive before any ToolCall or ActivityChanged for that
+                // session. These are not ToolCalls, so no observe.
+                if !lifecycle.is_empty() {
+                    correlator.agent_events(&lifecycle);
+                }
+
+                // Poll live sessions only. discover re-evaluates liveness
+                // every tick, so a session that comes back is a fresh
+                // SessionStarted — no need to keep tailing stale ones.
                 for session in sessions {
+                    if session.activity == AgentActivity::Stale {
+                        continue;
+                    }
                     if generation_handle.load(Ordering::SeqCst) != generation {
                         return;
                     }
@@ -445,6 +516,48 @@ mod tests {
     use crate::protocol::{
         AgentEvent, AppSettings, FsEvent, GitStatusSnapshot, WatcherStatus, WorkspaceSettings,
     };
+
+    /// Wait up to ~3 s for the sink to hold at least one matching event.
+    /// Prefer a bounded poll over a bare sleep so a slow CI host is not flaky.
+    fn wait_for(sink: &RecordingSink, pred: impl Fn(&[AgentEvent]) -> bool) -> Vec<AgentEvent> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let events = sink.agent_events.lock().unwrap().clone();
+            if pred(&events) {
+                return events;
+            }
+            if std::time::Instant::now() >= deadline {
+                return events;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Percent-encode a path the way Grok names session cwd directories
+    /// (`/` → `%2F`). Only the separators matter for these tests.
+    fn percent_encode_path(path: &Path) -> String {
+        path.to_string_lossy()
+            .bytes()
+            .map(|b| {
+                if b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' {
+                    (b as char).to_string()
+                } else {
+                    format!("%{b:02X}")
+                }
+            })
+            .collect()
+    }
+
+    /// Write a synthetic Grok session under `agent_root` for `workspace`.
+    /// Fresh mtime → discovery treats it as live within the recency window.
+    fn write_live_grok_session(agent_root: &Path, workspace: &Path, session_id: &str) {
+        let dir = agent_root
+            .join("sessions")
+            .join(percent_encode_path(workspace))
+            .join(session_id);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("events.jsonl"), "").unwrap();
+    }
 
     /// Records what the engine pushes, so tests can assert on emissions
     /// without a window or a pipe.
@@ -726,6 +839,136 @@ mod tests {
             })
             .unwrap();
         assert!(engine.poller_generation() > after_close);
+        engine.handle(Command::CloseWorkspace).unwrap();
+    }
+
+    #[test]
+    fn discovery_of_a_live_session_emits_exactly_one_session_started() {
+        let workspace = tempfile::tempdir().unwrap();
+        let agent_root = tempfile::tempdir().unwrap();
+        write_live_grok_session(agent_root.path(), workspace.path(), "sess-appear");
+
+        let (engine, sink) = engine();
+        engine
+            .handle(Command::SetAppSettings {
+                value: AppSettings {
+                    agent_roots: vec![agent_root.path().to_string_lossy().into_owned()],
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+        engine
+            .handle(Command::OpenWorkspace {
+                path: workspace.path().to_string_lossy().into_owned(),
+            })
+            .unwrap();
+
+        let is_appear_start = |e: &AgentEvent| {
+            matches!(
+                e,
+                AgentEvent::SessionStarted { session_id, .. }
+                    if session_id == "sess-appear"
+            )
+        };
+        let events = wait_for(&sink, |ev| ev.iter().any(is_appear_start));
+        let starts: Vec<_> = events.iter().filter(|e| is_appear_start(e)).collect();
+        assert_eq!(
+            starts.len(),
+            1,
+            "exactly one SessionStarted on first sight: {events:?}"
+        );
+
+        // SessionStarted carries no activity and the store assumes `working`,
+        // so the announcement has to be followed by what discovery actually
+        // found — otherwise a quiet idle session renders as working forever.
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                AgentEvent::ActivityChanged {
+                    session_id,
+                    activity: AgentActivity::Idle,
+                    ..
+                } if session_id == "sess-appear"
+            )),
+            "a new session must announce its real activity: {events:?}"
+        );
+
+        // A second tick must not re-announce the same live session.
+        thread::sleep(Duration::from_millis(1_200));
+        let events = sink.agent_events.lock().unwrap().clone();
+        let starts: Vec<_> = events.iter().filter(|e| is_appear_start(e)).collect();
+        assert_eq!(
+            starts.len(),
+            1,
+            "no second SessionStarted on the next tick: {events:?}"
+        );
+
+        engine.handle(Command::CloseWorkspace).unwrap();
+    }
+
+    #[test]
+    fn session_turning_stale_emits_exactly_one_session_ended() {
+        let workspace = tempfile::tempdir().unwrap();
+        let agent_root = tempfile::tempdir().unwrap();
+        write_live_grok_session(agent_root.path(), workspace.path(), "sess-end");
+
+        let (engine, sink) = engine();
+        engine
+            .handle(Command::SetAppSettings {
+                value: AppSettings {
+                    agent_roots: vec![agent_root.path().to_string_lossy().into_owned()],
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+        engine
+            .handle(Command::OpenWorkspace {
+                path: workspace.path().to_string_lossy().into_owned(),
+            })
+            .unwrap();
+
+        let is_end_start = |e: &AgentEvent| {
+            matches!(
+                e,
+                AgentEvent::SessionStarted { session_id, .. } if session_id == "sess-end"
+            )
+        };
+        let is_end_ended = |e: &AgentEvent| {
+            matches!(
+                e,
+                AgentEvent::SessionEnded { session_id, .. } if session_id == "sess-end"
+            )
+        };
+        let events = wait_for(&sink, |ev| ev.iter().any(is_end_start));
+        assert!(
+            events.iter().any(is_end_start),
+            "session must appear first: {events:?}"
+        );
+
+        // Age the session past Grok's freshness window so discover marks it
+        // Stale — that is the same path as "disappeared" for lifecycle.
+        let events_file = agent_root
+            .path()
+            .join("sessions")
+            .join(percent_encode_path(workspace.path()))
+            .join("sess-end")
+            .join("events.jsonl");
+        // Bare epoch-second ts → normalize_ts scales to ms far in the past.
+        std::fs::write(
+            &events_file,
+            r#"{"type":"phase_changed","ts":1,"phase":"streaming_text"}
+"#,
+        )
+        .unwrap();
+
+        let events = wait_for(&sink, |ev| ev.iter().any(is_end_ended));
+        let ends: Vec<_> = events.iter().filter(|e| is_end_ended(e)).collect();
+        assert_eq!(
+            ends.len(),
+            1,
+            "exactly one SessionEnded when session goes stale: {events:?}"
+        );
+
         engine.handle(Command::CloseWorkspace).unwrap();
     }
 }

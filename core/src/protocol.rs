@@ -421,7 +421,7 @@ pub struct UpdateCheck {
 
 /// Which coding agent a session belongs to. Providers are added behind the
 /// `AgentProvider` trait, so this grows without anything downstream changing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AgentKind {
     ClaudeCode,

@@ -120,9 +120,12 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
         }
         case "assistantNote": {
           // Notes do not change activity or tallies; bump last-seen only
-          // so a chatty session does not look abandoned.
+          // so a chatty session does not look abandoned. last-prompt records
+          // carry no timestamp (at: 0) — a zero must not rewind the clock.
           sessions = sessions.map((s) =>
-            s.id === event.sessionId ? { ...s, lastActivity: event.at } : s,
+            s.id === event.sessionId
+              ? { ...s, lastActivity: Math.max(s.lastActivity, event.at) }
+              : s,
           );
           break;
         }

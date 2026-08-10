@@ -99,6 +99,28 @@ describe("agentStore", () => {
     expect(useAgentStore.getState().sessions).toHaveLength(0);
   });
 
+  it("assistantNote with at: 0 does not clobber lastActivity", () => {
+    useAgentStore.getState().apply([
+      started("s1"),
+      {
+        kind: "toolCall",
+        sessionId: "s1",
+        at: 1_500,
+        tool: "Edit",
+        summary: null,
+        paths: [],
+        sidechain: false,
+      },
+      {
+        kind: "assistantNote",
+        sessionId: "s1",
+        at: 0,
+        text: "last prompt with no timestamp",
+      },
+    ]);
+    expect(useAgentStore.getState().sessions[0]?.lastActivity).toBe(1_500);
+  });
+
   it("excludes stale sessions from the live selector", () => {
     useAgentStore.getState().apply([
       started("live"),

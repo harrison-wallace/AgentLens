@@ -63,6 +63,37 @@ pub fn providers() -> Vec<Box<dyn AgentProvider>> {
     ]
 }
 
+/// Does `dir` contain at least one subdirectory?
+///
+/// Pair with [`has_json_children`]: Claude's session registry is files
+/// (`sessions/<pid>.json`), Grok's is directories
+/// (`sessions/<percent-encoded-cwd>/<session-id>/`). A bare `sessions/`
+/// existence check claims the other agent's root; these are the shared
+/// discriminators. Missing or unreadable → `false`, never panic.
+pub(crate) fn has_dir_children(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries
+        .filter_map(|e| e.ok())
+        .any(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+}
+
+/// Does `dir` contain at least one `*.json` file?
+///
+/// See [`has_dir_children`] for why this is the other half of the Claude /
+/// Grok root discriminator. Missing or unreadable → `false`, never panic.
+pub(crate) fn has_json_children(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.filter_map(|e| e.ok()).any(|e| {
+        e.path()
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+    })
+}
+
 /// Is `cwd` the workspace, or somewhere inside it?
 ///
 /// Descendants count. An agent that runs `cd src-tauri` mid-session writes
@@ -354,6 +385,35 @@ mod tests {
 
         assert_eq!(entry.agent, Some(AgentKind::ClaudeCode));
         assert!(!entry.detected);
+    }
+
+    #[test]
+    fn a_grok_root_and_a_claude_root_are_each_claimed_by_exactly_one_provider() {
+        // Both agents keep a `sessions/` directory, and both can have a
+        // `projects/` one, so a single-directory probe made each provider
+        // claim the other's root — settings labelled `~/.grok` "Claude Code".
+        // The discriminator is what `sessions/` holds: Claude writes
+        // `<pid>.json` files, Grok writes one directory per encoded cwd.
+        let dir = tempfile::tempdir().unwrap();
+
+        let grok = dir.path().join("grok");
+        std::fs::create_dir_all(grok.join("sessions").join("%2Fhome%2Fdev%2Fproj")).unwrap();
+        std::fs::create_dir_all(grok.join("projects")).unwrap();
+
+        let claude = dir.path().join("claude");
+        std::fs::create_dir_all(claude.join("projects")).unwrap();
+        std::fs::create_dir_all(claude.join("sessions")).unwrap();
+        std::fs::write(claude.join("sessions").join("4242.json"), "{}").unwrap();
+
+        let claimants = |root: &Path| -> Vec<AgentKind> {
+            providers()
+                .iter()
+                .filter(|provider| provider.claims_root(root))
+                .map(|provider| provider.kind())
+                .collect()
+        };
+        assert_eq!(claimants(&grok), vec![AgentKind::Grok]);
+        assert_eq!(claimants(&claude), vec![AgentKind::ClaudeCode]);
     }
 
     #[test]
