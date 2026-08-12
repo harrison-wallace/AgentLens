@@ -167,6 +167,18 @@ pub fn describe_roots(configured: &[String]) -> Vec<AgentRootInfo> {
         .collect();
     let all = merge_roots(detected.clone(), configured);
 
+    if all.is_empty() {
+        // An empty list used to render as "None found", which is the same
+        // string as a machine that genuinely has no agent. Say why so a
+        // remote daemon with no HOME is diagnosable.
+        return vec![AgentRootInfo {
+            path: String::new(),
+            agent: None,
+            detected: false,
+            note: Some(empty_roots_note()),
+        }];
+    }
+
     all.into_iter()
         .map(|root| AgentRootInfo {
             agent: providers
@@ -175,8 +187,24 @@ pub fn describe_roots(configured: &[String]) -> Vec<AgentRootInfo> {
                 .map(|provider| provider.kind()),
             detected: detected.contains(&root),
             path: crate::paths::normalize_absolute(&root),
+            note: None,
         })
         .collect()
+}
+
+/// Why detection returned no roots. Uses the same home lookup as the
+/// providers, including the platform fallback when `HOME` is unset.
+fn empty_roots_note() -> String {
+    match crate::paths::home_dir() {
+        None => {
+            "This process has no home directory. Session folders cannot be found. Add a path below."
+                .into()
+        }
+        Some(home) => format!(
+            "Looked in {} for Claude Code and Grok session folders. None were found. Add a path below if yours lives somewhere else.",
+            crate::paths::normalize_absolute(&home)
+        ),
+    }
 }
 
 /// A source of agent sessions for one workspace.
@@ -349,6 +377,18 @@ mod tests {
 
         let roots = resolve_roots(&[path.clone(), "   ".into(), "".into(), path.clone()]);
         assert_eq!(roots.iter().filter(|root| **root == extra).count(), 1);
+    }
+
+    #[test]
+    fn empty_roots_note_names_home_when_it_exists() {
+        // The wording is the settings empty-state. A missing home is the
+        // remote-daemon case; a present home that holds no profiles is the
+        // ordinary "this machine has no agent" case. Both must be distinct.
+        let note = empty_roots_note();
+        assert!(
+            note.contains("Session folders cannot be found") || note.contains("None were found"),
+            "{note}"
+        );
     }
 
     #[test]

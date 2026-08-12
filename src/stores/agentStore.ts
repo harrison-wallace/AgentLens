@@ -44,6 +44,36 @@ function fromRef(ref: SessionRef): AgentSession {
 }
 
 /**
+ * Insert `sessionId` if the store does not already hold it, then apply
+ * `update`. Events other than `sessionStarted` do not name the agent;
+ * the placeholder is overwritten when that event arrives. Dropping an
+ * unknown id is how a silent provider used to blank the panel.
+ */
+function upsert(
+  sessions: AgentSession[],
+  sessionId: string,
+  at: number,
+  update: (session: AgentSession) => AgentSession,
+): AgentSession[] {
+  const existing = sessions.find((session) => session.id === sessionId);
+  if (existing) {
+    return sessions.map((session) => (session.id === sessionId ? update(session) : session));
+  }
+  return [
+    update({
+      id: sessionId,
+      agent: "claudeCode",
+      title: null,
+      lastActivity: at,
+      activity: { kind: "working", detail: null },
+      toolCalls: 0,
+      startedAt: at,
+    }),
+    ...sessions,
+  ];
+}
+
+/**
  * Sessions whose activity is not `stale`. Stale means the process is gone
  * or the heartbeat went cold — still listed in the raw store long enough
  * for a final event, but never drawn in the header or session panel.
@@ -99,34 +129,29 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
           break;
         }
         case "activityChanged": {
-          sessions = sessions.map((s) =>
-            s.id === event.sessionId
-              ? { ...s, activity: event.activity, lastActivity: event.at }
-              : s,
-          );
+          sessions = upsert(sessions, event.sessionId, event.at, (s) => ({
+            ...s,
+            activity: event.activity,
+            lastActivity: event.at,
+          }));
           break;
         }
         case "toolCall": {
-          sessions = sessions.map((s) =>
-            s.id === event.sessionId
-              ? {
-                  ...s,
-                  toolCalls: s.toolCalls + 1,
-                  lastActivity: event.at,
-                }
-              : s,
-          );
+          sessions = upsert(sessions, event.sessionId, event.at, (s) => ({
+            ...s,
+            toolCalls: s.toolCalls + 1,
+            lastActivity: event.at,
+          }));
           break;
         }
         case "assistantNote": {
           // Notes do not change activity or tallies; bump last-seen only
           // so a chatty session does not look abandoned. last-prompt records
           // carry no timestamp (at: 0) — a zero must not rewind the clock.
-          sessions = sessions.map((s) =>
-            s.id === event.sessionId
-              ? { ...s, lastActivity: Math.max(s.lastActivity, event.at) }
-              : s,
-          );
+          sessions = upsert(sessions, event.sessionId, event.at, (s) => ({
+            ...s,
+            lastActivity: Math.max(s.lastActivity, event.at),
+          }));
           break;
         }
       }

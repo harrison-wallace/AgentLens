@@ -84,7 +84,7 @@ describe("agentStore", () => {
     expect(s?.lastActivity).toBe(1_600);
   });
 
-  it("ignores toolCall for an unknown session", () => {
+  it("inserts a session on toolCall for an unknown id", () => {
     useAgentStore.getState().apply([
       {
         kind: "toolCall",
@@ -96,6 +96,32 @@ describe("agentStore", () => {
         sidechain: false,
       },
     ]);
+    const sessions = useAgentStore.getState().sessions;
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toMatchObject({
+      id: "ghost",
+      toolCalls: 1,
+      lastActivity: 1,
+    });
+  });
+
+  it("inserts a session on activityChanged for an unknown id", () => {
+    useAgentStore.getState().apply([
+      {
+        kind: "activityChanged",
+        sessionId: "late",
+        at: 2_000,
+        activity: { kind: "blocked" },
+      },
+    ]);
+    const sessions = useAgentStore.getState().sessions;
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]?.id).toBe("late");
+    expect(sessions[0]?.activity).toEqual({ kind: "blocked" });
+  });
+
+  it("does not insert on sessionEnded for an unknown id", () => {
+    useAgentStore.getState().apply([{ kind: "sessionEnded", sessionId: "never", at: 1 }]);
     expect(useAgentStore.getState().sessions).toHaveLength(0);
   });
 

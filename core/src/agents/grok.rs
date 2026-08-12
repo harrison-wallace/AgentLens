@@ -13,6 +13,13 @@
 //! so the only thing read out of it is path-bearing argument keys, and
 //! nothing else is retained.
 //!
+//! Live sessions are listed in `<root>/active_sessions.json` (verified
+//! 2026-08-12 against a running Grok session): a JSON array of
+//! `{ cwd, opened_at, pid, session_id }`. `session_id` is the child
+//! directory name under `sessions/<percent-encoded-cwd>/`. The file carries
+//! no activity state, so a listed session is `Idle`. A listed `pid` that is
+//! gone falls through to recency — prefer under-claiming.
+//!
 //! The format is not a stable API. Unknown event types are skipped, malformed
 //! lines are counted and ignored, and an unknown `schema_version` major stops
 //! extraction for that session rather than guessing.
@@ -44,10 +51,13 @@ const MAX_EVENTS_PER_POLL: usize = 500;
 const PERMISSION_PROMPT_DWELL_MS: i64 = 1000;
 
 /// How recently a Grok session must have been written to for discovery to
-/// treat it as live. There is no live-process signal for Grok yet, so
-/// recency is the only honest one; five minutes mirrors the heartbeat
-/// fallback in claude.rs. Prefer under-claiming: a session wrongly shown
-/// as live is worse than one missing for a few seconds.
+/// treat it as live when it is **not** in `active_sessions.json`.
+///
+/// The registry is the primary live-process signal. Recency covers a
+/// missing, empty, or stale registry (Grok has been seen to leave the
+/// file empty). Five minutes mirrors the heartbeat fallback in claude.rs.
+/// Prefer under-claiming: a session wrongly shown as live is worse than
+/// one missing for a few seconds.
 const FRESH_WINDOW_MS: i64 = 5 * 60 * 1000;
 
 /// Major `schema_version` this provider understands. Anything whose major
@@ -174,12 +184,6 @@ fn looks_like_root(dir: &Path) -> bool {
     sessions.is_dir() && !has_json_children(&sessions)
 }
 
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-}
-
 fn now_millis() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -225,7 +229,7 @@ impl AgentProvider for Grok {
         // conventional home directory is detected. The agent_roots setting
         // covers anything else.
         let mut roots = Vec::new();
-        if let Some(home) = home_dir() {
+        if let Some(home) = crate::paths::home_dir() {
             let candidate = home.join(".grok");
             if looks_like_root(&candidate) {
                 roots.push(candidate);
@@ -242,6 +246,10 @@ impl AgentProvider for Grok {
         let now = now_millis();
         let mut sessions = Vec::new();
         for root in roots {
+            // One read per root, not per session. Missing or malformed is
+            // an empty set — recency still applies, and discover never
+            // errors.
+            let live = live_session_ids(root);
             let sessions_dir = root.join("sessions");
             let Ok(cwd_entries) = std::fs::read_dir(&sessions_dir) else {
                 continue;
@@ -270,9 +278,12 @@ impl AgentProvider for Grok {
                     }
                     let id = session_entry.file_name().to_string_lossy().into_owned();
                     let last_activity = file_last_activity(&events_file);
-                    // No live-process signal for Grok; recency is the only
-                    // honest liveness check. Prefer under-claiming.
-                    let activity = if now.saturating_sub(last_activity) <= FRESH_WINDOW_MS {
+                    // Registry first (a listed live pid is Idle), then
+                    // recency, then Stale. The registry carries no phase
+                    // state, so listed never means Working.
+                    let activity = if live.contains(&id)
+                        || now.saturating_sub(last_activity) <= FRESH_WINDOW_MS
+                    {
                         AgentActivity::Idle
                     } else {
                         AgentActivity::Stale
@@ -633,6 +644,76 @@ fn paths_from_arguments(arguments: &Value, workspace: &Path) -> Vec<String> {
         .collect()
 }
 
+/// Session ids listed in `<root>/active_sessions.json` whose process still
+/// looks alive. Missing, empty, or malformed file → empty set, never error.
+///
+/// Verified shape (one running Grok session, 2026-08-12):
+/// `[{ "cwd", "opened_at", "pid", "session_id" }]`.
+/// `session_id` is the directory name `discover` already uses. A listed
+/// `pid` that is gone is dropped so a stale registry cannot keep a dead
+/// session live forever.
+fn live_session_ids(root: &Path) -> HashSet<String> {
+    let text = match std::fs::read_to_string(root.join("active_sessions.json")) {
+        Ok(text) => text,
+        Err(_) => return HashSet::new(),
+    };
+    let value: Value = match serde_json::from_str(&text) {
+        Ok(value) => value,
+        Err(_) => return HashSet::new(),
+    };
+    let Some(entries) = value.as_array() else {
+        return HashSet::new();
+    };
+    let mut live = HashSet::new();
+    for entry in entries {
+        let Some(id) = entry.get("session_id").and_then(Value::as_str) else {
+            continue;
+        };
+        if id.is_empty() {
+            continue;
+        }
+        if let Some(pid) = entry.get("pid").and_then(Value::as_u64) {
+            if pid == 0 || pid > u64::from(u32::MAX) || !pid_is_alive(pid as u32) {
+                continue;
+            }
+        }
+        live.insert(id.to_string());
+    }
+    live
+}
+
+/// Is `pid` a running process? Used only to reject a stale registry entry.
+/// When we cannot tell (non-Linux, non-Windows), trust the listing.
+fn pid_is_alive(pid: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        PathBuf::from(format!("/proc/{pid}")).is_dir()
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        const SYNCHRONIZE: u32 = 0x0010_0000;
+        let handle =
+            unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, 0, pid) };
+        if handle.is_null() {
+            return false;
+        }
+        let alive = unsafe { WaitForSingleObject(handle, 0) } == WAIT_TIMEOUT;
+        unsafe {
+            CloseHandle(handle);
+        }
+        alive
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
+        let _ = pid;
+        true
+    }
+}
+
 /// Best-effort last-activity time from the events file: prefer the last
 /// parseable `ts`, fall back to mtime.
 ///
@@ -792,9 +873,8 @@ mod tests {
 
     #[test]
     fn discovery_treats_a_recent_session_as_idle_and_an_old_one_as_stale() {
-        // There is no live-process signal for Grok, so recency is the only
-        // liveness test there is. Without it every session ever run in a
-        // workspace stays listed as live forever — which is what shipped.
+        // Recency is the fallback when the registry is missing. Without it
+        // every session ever run in a workspace stays listed as live.
         let recent = format!(
             r#"{{"type":"phase_changed","ts":{},"phase":"streaming_text"}}"#,
             now_millis()
@@ -810,6 +890,90 @@ mod tests {
             "/home/dev/project",
         );
         let found = Grok::new().discover(workspace(), &old_roots);
+        assert_eq!(found[0].activity, AgentActivity::Stale, "{found:?}");
+    }
+
+    /// Write `<root>/active_sessions.json` with the verified 2026-08-12 shape.
+    /// Paths and ids are invented — never real session content.
+    fn write_active_sessions(root: &Path, entries: &[(&str, u32)]) {
+        let body = entries
+            .iter()
+            .map(|(id, pid)| {
+                format!(
+                    r#"{{"cwd":"/home/dev/project","opened_at":"2026-08-12T16:57:00.123Z","pid":{pid},"session_id":"{id}"}}"#
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        std::fs::write(root.join("active_sessions.json"), format!("[{body}]")).unwrap();
+    }
+
+    #[test]
+    fn discovery_treats_a_registry_session_as_live_even_when_events_are_old() {
+        // The registry is why an idle session older than the freshness
+        // window stays listed: recency alone would mark it Stale.
+        let (_dir, roots, _) = session_tree(
+            r#"{"type":"phase_changed","ts":1,"phase":"streaming_text"}"#,
+            "sess-registry",
+            "/home/dev/project",
+        );
+        write_active_sessions(&roots[0], &[("sess-registry", std::process::id())]);
+        let found = Grok::new().discover(workspace(), &roots);
+        assert_eq!(found[0].id, "sess-registry");
+        assert_eq!(found[0].activity, AgentActivity::Idle, "{found:?}");
+    }
+
+    #[test]
+    fn discovery_treats_a_dead_registry_pid_as_stale_when_events_are_old() {
+        // Prefer under-claiming: a leftover listing must not keep a dead
+        // session in the header.
+        let (_dir, roots, _) = session_tree(
+            r#"{"type":"phase_changed","ts":1,"phase":"streaming_text"}"#,
+            "sess-dead-pid",
+            "/home/dev/project",
+        );
+        write_active_sessions(&roots[0], &[("sess-dead-pid", 4_294_967_294)]);
+        let found = Grok::new().discover(workspace(), &roots);
+        assert_eq!(found[0].activity, AgentActivity::Stale, "{found:?}");
+    }
+
+    #[test]
+    fn missing_or_malformed_registry_degrades_to_recency_and_never_errors() {
+        let recent = format!(
+            r#"{{"type":"phase_changed","ts":{},"phase":"streaming_text"}}"#,
+            now_millis()
+        );
+
+        // No file: same as today's recency-only behaviour.
+        let (_missing, missing_roots, _) =
+            session_tree(&recent, "sess-no-reg", "/home/dev/project");
+        let found = Grok::new().discover(workspace(), &missing_roots);
+        assert_eq!(found[0].activity, AgentActivity::Idle, "{found:?}");
+
+        // Truncated JSON: ignore the file, do not panic.
+        let (_bad, bad_roots, _) = session_tree(&recent, "sess-bad-reg", "/home/dev/project");
+        std::fs::write(bad_roots[0].join("active_sessions.json"), "{not json").unwrap();
+        let found = Grok::new().discover(workspace(), &bad_roots);
+        assert_eq!(found[0].activity, AgentActivity::Idle, "{found:?}");
+
+        // Object instead of array: same degradation.
+        let (_obj, obj_roots, _) = session_tree(&recent, "sess-obj-reg", "/home/dev/project");
+        std::fs::write(
+            obj_roots[0].join("active_sessions.json"),
+            r#"{"session_id":"sess-obj-reg"}"#,
+        )
+        .unwrap();
+        let found = Grok::new().discover(workspace(), &obj_roots);
+        assert_eq!(found[0].activity, AgentActivity::Idle, "{found:?}");
+
+        // Empty array + old events: Stale (registry names no one).
+        let (_empty, empty_roots, _) = session_tree(
+            r#"{"type":"phase_changed","ts":1,"phase":"streaming_text"}"#,
+            "sess-empty-reg",
+            "/home/dev/project",
+        );
+        std::fs::write(empty_roots[0].join("active_sessions.json"), "[]").unwrap();
+        let found = Grok::new().discover(workspace(), &empty_roots);
         assert_eq!(found[0].activity, AgentActivity::Stale, "{found:?}");
     }
 

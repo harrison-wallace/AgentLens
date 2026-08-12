@@ -117,7 +117,7 @@ fn detected_profiles() -> Vec<PathBuf> {
         push(PathBuf::from(configured));
     }
 
-    if let Some(home) = home_dir() {
+    if let Some(home) = crate::paths::home_dir() {
         push(home.join(".claude"));
 
         // `~/.claude*` siblings — `-work`, `_work`, `2` all get picked up.
@@ -150,12 +150,6 @@ fn detected_profiles() -> Vec<PathBuf> {
 /// holds directories — so a `sessions/` with dir children is not Claude.
 fn looks_like_profile(dir: &Path) -> bool {
     dir.join("projects").is_dir() && !has_dir_children(&dir.join("sessions"))
-}
-
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
 }
 
 /// The project directory name Claude Code derives from a workspace path:
@@ -1324,6 +1318,46 @@ mod tests {
             .iter()
             .find(|s| s.id == "live-idle")
             .expect("registry session");
+        assert_eq!(live.activity, AgentActivity::Idle);
+    }
+
+    #[cfg(any(target_os = "linux", windows))]
+    #[test]
+    fn registry_live_pid_is_not_stale_however_old_the_heartbeat() {
+        // statusUpdatedAt only moves on a status transition. A live process
+        // sitting idle for ten minutes must stay listed — the Windows bug
+        // was treating that cold heartbeat as death.
+        let root = tempfile::tempdir().unwrap();
+        let me = std::process::id();
+        let start = linux_start_for_tests(me);
+        let body = format!(
+            r#"{{
+                "pid": {me},
+                "sessionId": "old-beat",
+                "cwd": "/work/demo",
+                "startedAt": 1,
+                "procStart": "{start}",
+                "version": "2.1.224",
+                "kind": "interactive",
+                "entrypoint": "cli",
+                "name": "project-63",
+                "status": "idle",
+                "updatedAt": 1,
+                "statusUpdatedAt": 1
+            }}"#
+        );
+        write_registry(root.path(), me, &body);
+
+        let found = ClaudeCode::new().discover(workspace(), &[root.path().to_path_buf()]);
+        let live = found
+            .iter()
+            .find(|s| s.id == "old-beat")
+            .expect("live registry session");
+        assert_ne!(
+            live.activity,
+            AgentActivity::Stale,
+            "a live pid must not go stale on a cold heartbeat: {live:?}"
+        );
         assert_eq!(live.activity, AgentActivity::Idle);
     }
 

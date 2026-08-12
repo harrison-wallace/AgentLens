@@ -163,6 +163,8 @@ function AgentRoots() {
   const roots = useSettingsStore((s) => s.roots);
   const configured = useSettingsStore((s) => s.app.agentRoots);
   const setAgentRoots = useSettingsStore((s) => s.setAgentRoots);
+  const listed = roots.filter((root) => root.path);
+  const diagnostic = roots.find((root) => root.note && !root.path);
 
   return (
     <div>
@@ -173,8 +175,10 @@ function AgentRoots() {
       </p>
 
       <ul className="mt-1.5 space-y-0.5 rounded border border-border bg-surface p-2">
-        {roots.length === 0 && <li className="text-xs text-text-muted">None found</li>}
-        {roots.map((root) => (
+        {listed.length === 0 && (
+          <li className="text-xs text-text-muted">{diagnostic?.note ?? "None found"}</li>
+        )}
+        {listed.map((root) => (
           <li key={root.path} className="flex items-baseline gap-2 text-xs">
             <span className="min-w-0 flex-1 truncate text-text-body" title={root.path}>
               {root.path}

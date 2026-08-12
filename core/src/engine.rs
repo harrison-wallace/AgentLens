@@ -437,10 +437,11 @@ impl Engine {
                 }
                 prev_live = cur_live;
 
-                // Lifecycle batch first, its own emit: the frontend store only
-                // updates sessions it already holds, so SessionStarted must
+                // Lifecycle batch first, its own emit: SessionStarted should
                 // arrive before any ToolCall or ActivityChanged for that
-                // session. These are not ToolCalls, so no observe.
+                // session. The store also inserts on an unknown id, so a
+                // silent provider cannot blank the panel. These are not
+                // ToolCalls, so no observe.
                 if !lifecycle.is_empty() {
                     correlator.agent_events(&lifecycle);
                 }

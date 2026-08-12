@@ -304,6 +304,11 @@ export interface AgentRootInfo {
   agent: AgentKind | null;
   /** Found automatically, as opposed to named by the user. */
   detected: boolean;
+  /**
+   * Why detection found nothing, when this row is a diagnostic rather than
+   * a folder. Empty `path` plus a `note` is the empty-list case.
+   */
+  note?: string | null;
 }
 
 /** A session the app has found on disk but isn't necessarily tailing yet. */

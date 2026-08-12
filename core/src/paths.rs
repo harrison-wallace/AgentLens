@@ -21,10 +21,69 @@ use std::path::{Path, PathBuf};
 /// and the wrong one: a daemon's cwd is whatever the thing that spawned it
 /// happened to be in, which for an SSH session is a promise nobody made.
 pub fn home_dir() -> Option<PathBuf> {
+    // Env first: tests redirect HOME, and a user who set it meant it.
+    // A value that is not a directory is ignored so a daemon with a
+    // broken HOME still falls through to the platform lookup.
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
         .filter(|home| home.is_dir())
+        .or_else(platform_home)
+        .filter(|home| home.is_dir())
+}
+
+/// Home directory when `HOME` / `USERPROFILE` is missing or not a directory.
+///
+/// The daemon is spawned as a bare command (`wsl.exe … -- agentlens-daemon`,
+/// `ssh host agentlens-daemon`), not through a login shell. Those
+/// environments sometimes have no `HOME`. Agent discovery then finds no
+/// roots and the UI shows the same "no agent" state as a machine that
+/// genuinely has none.
+fn platform_home() -> Option<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        linux_passwd_home()
+    }
+    #[cfg(windows)]
+    {
+        let drive = std::env::var_os("HOMEDRIVE")?;
+        let path = std::env::var_os("HOMEPATH")?;
+        let mut home = PathBuf::from(drive);
+        home.push(path);
+        Some(home)
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
+        None
+    }
+}
+
+/// `/etc/passwd` home for this process's real uid. Used only when `HOME`
+/// is absent; never overrides a set env var.
+#[cfg(target_os = "linux")]
+fn linux_passwd_home() -> Option<PathBuf> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let uid = status.lines().find_map(|line| {
+        let rest = line.strip_prefix("Uid:")?;
+        rest.split_whitespace().next()?.parse::<u32>().ok()
+    })?;
+    for line in std::fs::read_to_string("/etc/passwd").ok()?.lines() {
+        let mut parts = line.split(':');
+        let _name = parts.next()?;
+        let _pw = parts.next()?;
+        let entry_uid = parts.next()?.parse::<u32>().ok()?;
+        if entry_uid != uid {
+            continue;
+        }
+        let _gid = parts.next()?;
+        let _gecos = parts.next()?;
+        let dir = parts.next()?;
+        if dir.is_empty() {
+            return None;
+        }
+        return Some(PathBuf::from(dir));
+    }
+    None
 }
 
 pub fn normalize_absolute(path: &Path) -> String {
@@ -112,6 +171,19 @@ pub fn resolve_existing_in_workspace(root: &Path, relative: &str) -> Result<Path
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn platform_home_reads_passwd_for_this_uid() {
+        // The fallback only runs when HOME is missing; this checks the
+        // lookup itself so a broken /proc or /etc/passwd parse cannot
+        // silently land as "no agent detected" on a remote daemon.
+        let home = platform_home();
+        assert!(
+            home.as_ref().is_some_and(|path| path.is_dir()),
+            "linux passwd home should resolve: {home:?}"
+        );
+    }
 
     #[test]
     fn normalize_absolute_uses_forward_slashes() {

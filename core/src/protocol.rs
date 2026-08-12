@@ -465,6 +465,10 @@ pub struct AgentRootInfo {
     pub agent: Option<AgentKind>,
     /// Found automatically, as opposed to named by the user.
     pub detected: bool,
+    /// Why detection found nothing, when this row is a diagnostic rather
+    /// than a folder. Empty `path` plus a `note` is the empty-list case.
+    #[serde(default)]
+    pub note: Option<String>,
 }
 
 /// A session the app has found on disk but is not necessarily tailing yet.

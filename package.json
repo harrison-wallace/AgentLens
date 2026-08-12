@@ -1,6 +1,6 @@
 {
   "name": "agentlens",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "Lightweight open-source observer for agentic coding",
   "license": "MIT",
   "private": true,

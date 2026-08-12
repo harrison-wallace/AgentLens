@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-08-12
+
+Grok sessions that were actually running could still look dead, and a remote
+daemon with no `HOME` looked like a machine with no agent. This release
+closes both.
+
+### Fixed
+
+- **A live Grok session older than five minutes was marked stale.** Recency
+  of the event file was the only liveness check, so a session sitting idle
+  waiting for the next prompt vanished from the header. Discovery now reads
+  Grok's own `active_sessions.json` first — a listed session with a live
+  process stays idle, and a leftover listing whose process is gone still
+  falls through to recency.
+- **An event for a session the store had never seen was dropped.** The
+  poller already emits `sessionStarted`, but a silent provider could still
+  blank the panel. Any event for an unknown id now inserts a row.
+- **A remote daemon with no `HOME` found no agent roots.** The process is
+  spawned as a bare command, not a login shell. Home now falls back to the
+  platform lookup (`/etc/passwd` on Linux, `HOMEDRIVE`+`HOMEPATH` on
+  Windows). Settings says why the list is empty instead of only "None
+  found".
+
 ## [0.8.1] - 2026-08-10
 
 Agent attribution shipped in 0.8.0; running it against a machine with real
