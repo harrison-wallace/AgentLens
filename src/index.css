@@ -311,6 +311,19 @@ body {
 .markdown-body img {
   max-width: 100%;
 }
+.markdown-body .mermaid-diagram {
+  margin: 0.7em 0;
+  overflow-x: auto;
+  background-color: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 0.75em;
+}
+.markdown-body .mermaid-diagram svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
 
 /* Focus rings: accent outline, never removed. */
 :focus-visible {

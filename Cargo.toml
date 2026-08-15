@@ -15,4 +15,4 @@ resolver = "2"
 # so three Cargo.toml literals drifting apart is how bootstrap's version check
 # silently stops matching (see `remote::bootstrap`).
 [workspace.package]
-version = "0.8.2"
+version = "0.9.0"

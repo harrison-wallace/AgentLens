@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-15
+
+Markdown files with mermaid fences now show diagrams in the preview, not just
+the source.
+
+### Added
+
+- **Mermaid diagrams in the markdown preview.** Fenced `mermaid` blocks
+  render as SVG. A diagram that fails to parse stays a code block. The
+  mermaid bundle loads only when a markdown file contains one. Diagram
+  source is treated as untrusted: init/frontmatter overrides are stripped
+  and the SVG is sanitized before it reaches the webview.
+
 ## [0.8.2] - 2026-08-12
 
 Grok sessions that were actually running could still look dead, and a remote

@@ -15,6 +15,7 @@ import { canRenderRich, formatBytes } from "../lib/preview";
 import { renderMarkdown } from "../lib/markdown";
 import { openExternally } from "../lib/tauri";
 import type { PreviewPayload, SessionDiff } from "../lib/protocol";
+import { resolveTheme, useAppearanceStore } from "../stores/appearanceStore";
 
 /** Unchanged lines kept either side of a change in the diff view. */
 const DIFF_CONTEXT_LINES = 3;
@@ -173,6 +174,8 @@ function CurrentView({ payload }: { payload: PreviewPayload }) {
 
 function TextPreview({ text, language }: { text: string; language: string }) {
   const [html, setHtml] = useState<string | null>(null);
+  // Mermaid bakes theme colours into the SVG, so a theme switch must rerender.
+  const theme = useAppearanceStore((s) => resolveTheme(s.theme));
 
   useEffect(() => {
     let cancelled = false;
@@ -182,7 +185,8 @@ function TextPreview({ text, language }: { text: string; language: string }) {
     // instead of a span per token.
     if (!canRenderRich(text)) return;
 
-    const render = language === "markdown" ? renderMarkdown(text) : highlightToHtml(text, language);
+    const render =
+      language === "markdown" ? renderMarkdown(text, { theme }) : highlightToHtml(text, language);
     void render.then((result) => {
       // The user can select another file while a grammar is still loading;
       // dropping the stale result keeps the wrong content off screen.
@@ -192,7 +196,7 @@ function TextPreview({ text, language }: { text: string; language: string }) {
     return () => {
       cancelled = true;
     };
-  }, [text, language]);
+  }, [text, language, theme]);
 
   // Rendered markdown and highlighted code both contain anchors. Following
   // one would navigate the whole webview away from the app, so clicks on
