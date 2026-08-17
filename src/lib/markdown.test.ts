@@ -78,6 +78,21 @@ describe("renderMarkdown", () => {
     expect(html).not.toContain("onerror");
   });
 
+  it("keeps mermaid geometry that is not a hyperlink", async () => {
+    // A stand-in for mermaid 11 output: viewBox / path data / width /
+    // marker-end="url(#…)" all fail a markdown-link URI regexp, so a
+    // copied ALLOWED_URI_REGEXP would leave an empty <svg>.
+    const html = await renderMarkdown("```mermaid\ngraph TD\nA-->B\n```", {
+      renderMermaid: async () =>
+        `<svg id="al-mmd-1" width="100%" height="182" viewBox="0 0 184 182" xmlns="http://www.w3.org/2000/svg"><path d="M50,50 L100,100" marker-end="url(#al-mmd-1-arrow)" stroke="#ccc"></path><rect x="10" y="20" width="50" height="30"></rect></svg>`,
+    });
+    expect(html).toContain('viewBox="0 0 184 182"');
+    expect(html).toContain('d="M50,50 L100,100"');
+    expect(html).toContain('marker-end="url(#al-mmd-1-arrow)"');
+    expect(html).toContain('width="100%"');
+    expect(html).toContain('x="10"');
+  });
+
   it("falls back to a code block when mermaid throws", async () => {
     const html = await renderMarkdown("```mermaid\nnot a diagram\n```", {
       renderMermaid: async () => {

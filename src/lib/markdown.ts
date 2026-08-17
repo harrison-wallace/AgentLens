@@ -47,12 +47,18 @@ const MARKDOWN_PURIFY: DomPurifyConfig = {
  * Mermaid SVGs need `<style>` and inline style; the markdown profile
  * forbids both. This profile still drops script, frames, and HTML
  * foreignObject (the usual mermaid XSS vehicles).
+ *
+ * Do not set `ALLOWED_URI_REGEXP` here. DOMPurify applies that check to
+ * every attribute that is not on its inert list, so the markdown-link
+ * pattern (`https?` / `mailto` / `#`) would also drop `viewBox`, path
+ * `d`, `width`, and `marker-end="url(#…)"` — the geometry the diagram
+ * needs. The default regexp already rejects `javascript:` while leaving
+ * those values alone.
  */
 const MERMAID_PURIFY: DomPurifyConfig = {
   USE_PROFILES: { svg: true, svgFilters: true },
   FORBID_TAGS: ["script", "iframe", "object", "embed", "foreignObject", "form", "input", "button"],
   FORBID_ATTR: ["srcset", "formaction", "ping"],
-  ALLOWED_URI_REGEXP: /^(?:https?:|mailto:|#)/i,
 };
 
 const SLOT_ATTR = "data-al-mermaid";

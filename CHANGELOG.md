@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-08-17
+
+Mermaid diagrams in the markdown preview rendered as empty boxes because the
+SVG sanitizer treated path data and viewBox as unsafe URIs.
+
+### Fixed
+
+- **Mermaid diagrams lost their geometry after sanitization.** DOMPurify's
+  `ALLOWED_URI_REGEXP` was copied from the markdown-link profile onto mermaid
+  SVGs, so `viewBox`, path `d`, `width`, and `marker-end="url(#…)"` were
+  stripped. Diagrams now keep those attributes; scripts and `foreignObject` are
+  still dropped.
+
 ## [0.9.0] - 2026-08-15
 
 Markdown files with mermaid fences now show diagrams in the preview, not just
