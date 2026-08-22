@@ -185,6 +185,8 @@ export interface Attribution {
    * lower confidence, and the UI says so.
    */
   viaCommand: boolean;
+  /** Delegated subagent work. Absent on events from an older daemon. */
+  sidechain?: boolean;
 }
 
 /** Lifecycle state of the filesystem watcher for the open workspace. */
@@ -236,8 +238,9 @@ export interface AppSettings {
   /** Surface `AGENTS.md` and friends whatever `.gitignore` says. */
   showAgentContext: boolean;
   /**
-   * Extra directories to search for agent sessions, added to whatever the app
-   * detects itself. The escape hatch for a layout detection can't guess.
+   * Extra directories to search for agent sessions on the connected machine,
+   * added to whatever the app detects itself. Persisted per host so a local
+   * path is not sent to a remote daemon.
    */
   agentRoots: string[];
   /**
@@ -261,6 +264,11 @@ export interface AppSettings {
    * ever downloaded or installed.
    */
   checkForUpdates: boolean;
+  /**
+   * OS notification when an agent waits or finishes. Only while unfocused.
+   * Presentation only — the backend ignores this.
+   */
+  notifyAgentState: boolean;
 }
 
 /** Result of a notify-only release check. */
@@ -339,6 +347,8 @@ export type AgentEvent =
   | {
       kind: "toolCall";
       sessionId: string;
+      /** Absent on events from an older daemon of this protocol version. */
+      agent?: AgentKind;
       at: number;
       tool: string;
       /** One-line description of what the call was for, when derivable. */
@@ -348,14 +358,21 @@ export type AgentEvent =
       /** The work of a subagent rather than the main thread. */
       sidechain: boolean;
     }
-  | { kind: "assistantNote"; sessionId: string; at: number; text: string }
+  | {
+      kind: "assistantNote";
+      sessionId: string;
+      agent?: AgentKind;
+      at: number;
+      text: string;
+    }
   | {
       kind: "activityChanged";
       sessionId: string;
+      agent?: AgentKind;
       at: number;
       activity: AgentActivity;
     }
-  | { kind: "sessionEnded"; sessionId: string; at: number };
+  | { kind: "sessionEnded"; sessionId: string; agent?: AgentKind; at: number };
 
 /** The result of tailing a session: what happened, plus what couldn't be read. */
 export interface AgentPoll {

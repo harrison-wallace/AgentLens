@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-22
+
+The observer can ping you when an agent waits or finishes, git waits out a
+writing burst, and extra session folders stay on the machine they belong to.
+
+### Added
+
+- **OS notifications when an agent waits or finishes.** Only while AgentLens
+  is unfocused. Switch it off in Settings.
+- **Tray icon** with a tooltip of live agent state. Closing the window still
+  quits.
+- **Session stats** — duration, tool-call count, unique files touched, and a
+  `sub` count for delegated work.
+- **Per-agent colour** on tree filenames and feed marks, so Claude and Grok
+  are distinguishable at a glance. Header chips still colour by activity.
+- **Delegated subagent work is marked `sub`** on the feed. Correlation now
+  carries `sidechain` through to attribution.
+- **Git mutations wait out an agent burst** so a commit does not stage half a
+  turn. The action is held, not dropped; Run now is the escape hatch.
+- **Extra agent-session folders persist per host**, so a local path is not
+  pushed to a WSL distro or SSH daemon.
+- **One draft GitHub release** is created first, so installer jobs cannot each
+  open a new draft that never receives the daemons.
+
+### Changed
+
+- Sessions, poller lifecycle, and protocol events key on `(agent, id)` rather
+  than id alone, so a Claude session and a Grok session cannot merge.
+- Host-scoped app settings reload only once the new backend is connected.
+
+### Fixed
+
+- A repeat `sessionStarted` after open or reconnect no longer forces
+  `working`. That had held git mutations and fired a false "finished"
+  notification when the session was actually idle.
+- `startedAt` no longer rewinds on reconnect, so "running for" stays honest.
+- An older daemon's tool-call JSON without `agent` still deserializes.
+
 ## [0.9.1] - 2026-08-17
 
 Mermaid diagrams in the markdown preview rendered as empty boxes because the

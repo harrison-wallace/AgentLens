@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { GitStatusSnapshot } from "../lib/protocol";
+import { useAgentStore } from "./agentStore";
+import { BURST_QUIET_MS, useGitStore } from "./gitStore";
 
 const EMPTY: GitStatusSnapshot = { isRepository: true, branch: "main", files: [] };
 
@@ -16,6 +18,7 @@ function deferred() {
 }
 
 vi.mock("../lib/tauri", () => ({
+  agentSessions: vi.fn(async () => []),
   gitStatus: vi.fn(async () => EMPTY),
   gitCapabilities: vi.fn(async () => ({ canMutate: true, version: "git version 2", reason: null })),
   gitBranches: vi.fn(async () => ({ current: "main", branches: ["main"] })),
@@ -33,12 +36,11 @@ vi.mock("../lib/tauri", () => ({
   gitStashPop: vi.fn(async () => EMPTY),
 }));
 
-const { useGitStore } = await import("./gitStore");
-
 describe("gitStore", () => {
   beforeEach(() => {
     calls.length = 0;
     useGitStore.getState().reset();
+    useAgentStore.getState().reset();
     vi.clearAllMocks();
   });
 
@@ -218,5 +220,79 @@ describe("gitStore", () => {
     expect(await useGitStore.getState().stashAndSwitch("feature")).toBe(false);
     expect(vi.mocked(gitSwitchBranch)).not.toHaveBeenCalled();
     expect(useGitStore.getState().error).toBe("cannot stash");
+  });
+
+  it("holds a mutation while an agent is writing, then runs it after a quiet period", async () => {
+    vi.useFakeTimers();
+    const { gitStage } = await import("../lib/tauri");
+    useAgentStore.getState().apply([
+      {
+        kind: "sessionStarted",
+        sessionId: "s1",
+        agent: "claudeCode",
+        title: "t",
+        at: 1,
+      },
+    ]);
+
+    const staged = useGitStore.getState().stage(["a.rs"]);
+    expect(vi.mocked(gitStage)).not.toHaveBeenCalled();
+    expect(useGitStore.getState().held).toBe(1);
+
+    useAgentStore.getState().apply([
+      {
+        kind: "activityChanged",
+        sessionId: "s1",
+        agent: "claudeCode",
+        at: 2,
+        activity: { kind: "idle" },
+      },
+    ]);
+    await vi.advanceTimersByTimeAsync(BURST_QUIET_MS);
+    expect(await staged).toBe(true);
+    expect(vi.mocked(gitStage)).toHaveBeenCalledWith(["a.rs"]);
+    expect(useGitStore.getState().held).toBe(0);
+    vi.useRealTimers();
+  });
+
+  it("runs a held mutation immediately on override", async () => {
+    const { gitCommit } = await import("../lib/tauri");
+    useAgentStore.getState().apply([
+      {
+        kind: "sessionStarted",
+        sessionId: "s1",
+        agent: "claudeCode",
+        title: "t",
+        at: 1,
+      },
+    ]);
+
+    const committed = useGitStore.getState().commit("wip");
+    expect(vi.mocked(gitCommit)).not.toHaveBeenCalled();
+
+    useGitStore.getState().overrideBurst();
+    expect(await committed).toBe(true);
+    expect(vi.mocked(gitCommit)).toHaveBeenCalled();
+  });
+
+  it("runs a follow-up mutation after override while the agent is still writing", async () => {
+    const { gitStashPush, gitSwitchBranch } = await import("../lib/tauri");
+    useAgentStore.getState().apply([
+      {
+        kind: "sessionStarted",
+        sessionId: "s1",
+        agent: "claudeCode",
+        title: "t",
+        at: 1,
+      },
+    ]);
+
+    const switched = useGitStore.getState().stashAndSwitch("feature");
+    expect(vi.mocked(gitStashPush)).not.toHaveBeenCalled();
+
+    useGitStore.getState().overrideBurst();
+    expect(await switched).toBe(true);
+    expect(vi.mocked(gitStashPush)).toHaveBeenCalled();
+    expect(vi.mocked(gitSwitchBranch)).toHaveBeenCalledWith("feature");
   });
 });

@@ -290,6 +290,7 @@ fn tool_calls_from(record: &Value, workspace: &Path, session_id: &str, at: i64) 
                     let input = block.get("input");
                     Some(AgentEvent::ToolCall {
                         session_id: session_id.to_string(),
+                        agent: Some(AgentKind::ClaudeCode),
                         at,
                         tool: tool.to_string(),
                         // `Bash` carries a human-written description; the file
@@ -350,6 +351,7 @@ fn events_from(record: &Value, workspace: &Path) -> Vec<AgentEvent> {
             .map(|text| {
                 vec![AgentEvent::AssistantNote {
                     session_id,
+                    agent: Some(AgentKind::ClaudeCode),
                     // These records carry no timestamp of their own.
                     at: 0,
                     text: text.to_string(),
@@ -437,6 +439,7 @@ impl AgentProvider for ClaudeCode {
             };
             events.push(AgentEvent::ActivityChanged {
                 session_id: session.id.clone(),
+                agent: Some(AgentKind::ClaudeCode),
                 at,
                 activity: session.activity.clone(),
             });

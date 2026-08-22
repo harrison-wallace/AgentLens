@@ -1,28 +1,11 @@
 import { useEffect, useState } from "react";
+import { agentLabel, agentMark, agentTextClass } from "../lib/agent";
 import { selectLiveSessions, useAgentStore, type AgentSession } from "../stores/agentStore";
 import { useLayoutStore } from "../stores/layoutStore";
-import type { AgentActivity, AgentKind } from "../lib/protocol";
+import type { AgentActivity } from "../lib/protocol";
 
 /** How often "running for 3m" labels refresh. */
 const TICK_INTERVAL_MS = 15_000;
-
-function agentLabel(agent: AgentKind): string {
-  switch (agent) {
-    case "claudeCode":
-      return "Claude Code";
-    case "grok":
-      return "Grok";
-  }
-}
-
-function agentMark(agent: AgentKind): string {
-  switch (agent) {
-    case "claudeCode":
-      return "C";
-    case "grok":
-      return "G";
-  }
-}
 
 /** Activity in words for the panel — room enough for the working detail. */
 function activityWords(activity: AgentActivity): string {
@@ -45,13 +28,22 @@ function runningLabel(startedAt: number, now: number): string {
   return `${Math.floor(diffMs / 3_600_000)}h`;
 }
 
+function sessionStats(session: AgentSession): string {
+  const tools = `${session.toolCalls} tool${session.toolCalls === 1 ? "" : "s"}`;
+  const files = `${session.filesTouched} file${session.filesTouched === 1 ? "" : "s"}`;
+  if (session.sidechainCalls > 0) {
+    return `${tools} · ${files} · ${session.sidechainCalls} sub`;
+  }
+  return `${tools} · ${files}`;
+}
+
 function SessionRow({ session, now }: { session: AgentSession; now: number }) {
   const title = session.title?.trim() || "untitled";
   return (
     <div className="flex flex-col gap-0.5 px-3 py-1.5">
       <div className="flex min-w-0 items-baseline gap-2 text-xs">
         <span
-          className="w-3 shrink-0 text-center text-[11px] font-medium text-text-muted"
+          className={`w-3 shrink-0 text-center text-[11px] font-medium ${agentTextClass(session.agent)}`}
           title={agentLabel(session.agent)}
         >
           {agentMark(session.agent)}
@@ -65,9 +57,7 @@ function SessionRow({ session, now }: { session: AgentSession; now: number }) {
       </div>
       <div className="flex min-w-0 items-baseline gap-2 pl-5 text-[11px] text-text-muted">
         <span className="min-w-0 flex-1 truncate">{activityWords(session.activity)}</span>
-        <span className="shrink-0 tabular-nums" title="Tool calls this session">
-          {session.toolCalls} tool{session.toolCalls === 1 ? "" : "s"}
-        </span>
+        <span className="shrink-0 tabular-nums">{sessionStats(session)}</span>
       </div>
     </div>
   );
@@ -113,7 +103,10 @@ export default function SessionPanel() {
       {!collapsed && (
         <ul className="max-h-40 overflow-y-auto border-t border-border">
           {live.map((session) => (
-            <li key={session.id} className="border-b border-border last:border-b-0">
+            <li
+              key={`${session.agent}:${session.id}`}
+              className="border-b border-border last:border-b-0"
+            >
               <SessionRow session={session} now={now} />
             </li>
           ))}

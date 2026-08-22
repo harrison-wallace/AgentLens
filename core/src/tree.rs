@@ -610,4 +610,28 @@ mod tests {
             ]
         );
     }
+
+    /// Not on the default suite: creating 50k files is slow and is a
+    /// sitting-time profiler run, not a correctness check.
+    #[test]
+    #[ignore]
+    fn list_files_caps_a_50k_tree_in_a_few_seconds() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for i in 0..500 {
+            let sub = root.join(format!("d{i}"));
+            fs::create_dir(&sub).unwrap();
+            for j in 0..100 {
+                fs::write(sub.join(format!("f{j}.txt")), b"").unwrap();
+            }
+        }
+        let started = std::time::Instant::now();
+        let files = list_files(root, &no_extra(), &plain(false));
+        let elapsed = started.elapsed();
+        assert_eq!(files.len(), MAX_INDEXED_FILES);
+        assert!(
+            elapsed.as_secs() < 8,
+            "list_files on 50k files took {elapsed:?}"
+        );
+    }
 }

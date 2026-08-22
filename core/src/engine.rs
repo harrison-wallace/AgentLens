@@ -273,7 +273,7 @@ impl Engine {
                 // On-demand polls still feed the correlator so a UI that
                 // drives AgentEvents (instead of waiting for the background
                 // poller) still attributes file changes.
-                self.correlator.observe_agent_events(&events, session.agent);
+                self.correlator.observe_agent_events(&events);
                 ok(AgentPoll {
                     events,
                     records,
@@ -423,15 +423,17 @@ impl Engine {
                         // quiet Grok session emits nothing to correct it.
                         lifecycle.push(AgentEvent::ActivityChanged {
                             session_id: session.id.clone(),
+                            agent: Some(session.agent),
                             at,
                             activity: session.activity.clone(),
                         });
                     }
                     cur_live.insert(key);
                 }
-                for (_agent, session_id) in prev_live.difference(&cur_live) {
+                for (agent, session_id) in prev_live.difference(&cur_live) {
                     lifecycle.push(AgentEvent::SessionEnded {
                         session_id: session_id.clone(),
+                        agent: Some(*agent),
                         at: now,
                     });
                 }
@@ -460,7 +462,7 @@ impl Engine {
                     if events.is_empty() {
                         continue;
                     }
-                    correlator.observe_agent_events(&events, session.agent);
+                    correlator.observe_agent_events(&events);
                     correlator.agent_events(&events);
                 }
             }

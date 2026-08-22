@@ -18,7 +18,8 @@ import {
   splitPath,
   type FeedSort,
 } from "../lib/feed";
-import type { AgentKind, Attribution, FsEvent, FsEventKind } from "../lib/protocol";
+import { agentMark, agentTextClass } from "../lib/agent";
+import type { Attribution, FsEvent, FsEventKind } from "../lib/protocol";
 
 /** Render at most this many rows per batch; the rest collapse to "+N more". */
 const MAX_ROWS_PER_BATCH = 20;
@@ -39,22 +40,13 @@ const KIND_LABEL: Record<FsEventKind, string> = {
   renamed: "renamed",
 };
 
-function agentMark(agent: AgentKind): string {
-  switch (agent) {
-    case "claudeCode":
-      return "C";
-    case "grok":
-      return "G";
-  }
-}
-
 /**
  * Group key for "one tool call claimed these files". Paths from the same
- * call share session + tool + summary + viaCommand; different calls stay
- * separate even when the tool name matches.
+ * call share session + tool + summary + viaCommand + sidechain; different
+ * calls stay separate even when the tool name matches.
  */
 function attributionKey(attr: Attribution): string {
-  return `${attr.sessionId}\0${attr.tool}\0${attr.summary ?? ""}\0${attr.viaCommand ? "1" : "0"}`;
+  return `${attr.sessionId}\0${attr.tool}\0${attr.summary ?? ""}\0${attr.viaCommand ? "1" : "0"}\0${attr.sidechain ? "1" : "0"}`;
 }
 
 type RowGroup =
@@ -375,22 +367,26 @@ function AttributionBadge({ attribution }: { attribution: Attribution }) {
   const via = attribution.viaCommand;
   const summary = attribution.summary?.trim();
   const toolPart = via ? `via ${attribution.tool}` : attribution.tool;
+  const baseTitle = via
+    ? `Claimed via command ${attribution.tool} (lower confidence)`
+    : `${attribution.tool}${summary ? ` — ${summary}` : ""}`;
+  const title = attribution.sidechain ? `${baseTitle} · delegated subagent` : baseTitle;
 
   return (
     <div
       className={`flex min-w-0 items-baseline gap-1.5 px-1 text-[11px] ${
         via ? "text-text-ash" : "text-text-muted"
       }`}
-      title={
-        via
-          ? `Claimed via command ${attribution.tool} (lower confidence)`
-          : `${attribution.tool}${summary ? ` — ${summary}` : ""}`
-      }
+      title={title}
     >
-      <span className="w-3 shrink-0 text-center font-medium" aria-hidden>
+      <span
+        className={`w-3 shrink-0 text-center font-medium ${agentTextClass(attribution.agent)}`}
+        aria-hidden
+      >
         {agentMark(attribution.agent)}
       </span>
       <span className="shrink-0">{toolPart}</span>
+      {attribution.sidechain && <span className="shrink-0 text-text-ash">sub</span>}
       {summary && !via && <span className="min-w-0 truncate text-text-ash">— {summary}</span>}
       {summary && via && <span className="min-w-0 truncate opacity-80">— {summary}</span>}
     </div>

@@ -59,6 +59,8 @@ struct PendingCall {
     /// How many via-command claims this call has already taken — enforces
     /// [`COMMAND_PATH_CAP`].
     command_claims: usize,
+    /// Delegated subagent work rather than the main thread.
+    sidechain: bool,
 }
 
 /// Joins agent tool calls to filesystem events, then forwards everything to
@@ -102,10 +104,7 @@ impl Correlator {
 
     /// Record a tool call so later (or earlier-within-window) fs events can
     /// claim it. Called by the agent poller for every `ToolCall` it sees.
-    ///
-    /// `agent` is passed separately because `AgentEvent::ToolCall` does not
-    /// carry it — the poller already knows which provider the session
-    /// belongs to.
+    #[allow(clippy::too_many_arguments)]
     pub fn observe_tool_call(
         &self,
         session_id: &str,
@@ -114,6 +113,7 @@ impl Correlator {
         tool: &str,
         summary: Option<&str>,
         paths: &[String],
+        sidechain: bool,
     ) {
         let via_command = is_command_tool(tool);
         // Shell tools with accidental path args still count as via-command;
@@ -140,6 +140,7 @@ impl Correlator {
             paths: path_set,
             via_command,
             command_claims: 0,
+            sidechain,
         });
         // Prune against this call's timestamp so a long-running session does
         // not keep every tool call ever seen.
@@ -174,18 +175,27 @@ impl Correlator {
     /// Convenience: feed a whole batch of agent events, observing only the
     /// `ToolCall`s. Other event kinds are ignored here — the poller still
     /// forwards the full batch to the sink for UI session state.
-    pub fn observe_agent_events(&self, events: &[AgentEvent], agent: AgentKind) {
+    pub fn observe_agent_events(&self, events: &[AgentEvent]) {
         for event in events {
             if let AgentEvent::ToolCall {
                 session_id,
+                agent: Some(agent),
                 at,
                 tool,
                 summary,
                 paths,
-                ..
+                sidechain,
             } = event
             {
-                self.observe_tool_call(session_id, agent, *at, tool, summary.as_deref(), paths);
+                self.observe_tool_call(
+                    session_id,
+                    *agent,
+                    *at,
+                    tool,
+                    summary.as_deref(),
+                    paths,
+                    *sidechain,
+                );
             }
         }
     }
@@ -310,6 +320,7 @@ impl PendingCall {
             tool: self.tool.clone(),
             summary: self.summary.clone(),
             via_command,
+            sidechain: self.sidechain,
         }
     }
 }
@@ -438,6 +449,7 @@ mod tests {
             "Edit",
             None,
             &[path.to_string()],
+            false,
         );
     }
 
@@ -449,6 +461,7 @@ mod tests {
             "Bash",
             Some("cargo build"),
             &[],
+            false,
         );
     }
 
@@ -460,6 +473,7 @@ mod tests {
             "run_terminal_command",
             Some("cargo test"),
             &[],
+            false,
         );
     }
 
@@ -575,5 +589,23 @@ mod tests {
         let attr = out[0].attribution.as_ref().expect("claimed");
         assert_eq!(attr.tool, "Edit");
         assert!(!attr.via_command);
+    }
+
+    #[test]
+    fn a_sidechain_tool_call_marks_attribution() {
+        let c = correlator();
+        c.observe_tool_call(
+            "sess-1",
+            AgentKind::ClaudeCode,
+            10_000,
+            "Edit",
+            None,
+            &["src/main.rs".to_string()],
+            true,
+        );
+        let out = c.attribute(&[fs("src/main.rs", 11_000)]);
+        let attr = out[0].attribution.as_ref().expect("claimed");
+        assert!(attr.sidechain);
+        assert_eq!(attr.tool, "Edit");
     }
 }

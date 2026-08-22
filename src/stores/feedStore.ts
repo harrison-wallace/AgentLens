@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { clampFeedMaxEntries, DEFAULT_FEED_MAX_ENTRIES } from "../lib/feed";
-import type { AttributedEvent, Attribution, FsEvent } from "../lib/protocol";
+import type { AgentKind, AttributedEvent, Attribution, FsEvent } from "../lib/protocol";
 
 /**
  * The feed renders every entry it holds, so this bound is a DOM-node budget
@@ -59,6 +59,8 @@ interface FeedStore {
    * (Clear / session restart).
    */
   sessionTotals: SessionTotals;
+  /** Last agent that claimed each path. Unattributed edits do not clear it. */
+  lastAgentByPath: Record<string, AgentKind>;
   addBatch: (events: FsEvent[]) => void;
   /**
    * Merge agent attributions into existing batches. Always arrives after the
@@ -102,6 +104,7 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
   entries: [],
   maxEntries: DEFAULT_MAX_ENTRIES,
   sessionTotals: { ...EMPTY_TOTALS },
+  lastAgentByPath: {},
 
   addBatch: (events) => {
     if (events.length === 0) return;
@@ -131,10 +134,17 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
     if (events.length === 0) return;
     let entries = get().entries;
     let changed = false;
+    let lastAgentByPath = get().lastAgentByPath;
+    let agentsChanged = false;
 
     for (const { event, attribution } of events) {
       if (!attribution) continue;
       const path = event.path;
+      if (!agentsChanged) {
+        lastAgentByPath = { ...lastAgentByPath };
+        agentsChanged = true;
+      }
+      lastAgentByPath[path] = attribution.agent;
       for (let i = 0; i < entries.length; i += 1) {
         const entry = entries[i];
         if (!entry || entry.kind !== "batch") continue;
@@ -152,7 +162,12 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
       }
     }
 
-    if (changed) set({ entries });
+    if (changed || agentsChanged) {
+      set({
+        ...(changed ? { entries } : {}),
+        ...(agentsChanged ? { lastAgentByPath } : {}),
+      });
+    }
   },
 
   beginGap: (at) => {
@@ -185,5 +200,5 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
     });
   },
 
-  clear: () => set({ entries: [], sessionTotals: { ...EMPTY_TOTALS } }),
+  clear: () => set({ entries: [], sessionTotals: { ...EMPTY_TOTALS }, lastAgentByPath: {} }),
 }));

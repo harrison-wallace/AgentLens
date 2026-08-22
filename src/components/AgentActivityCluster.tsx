@@ -1,20 +1,12 @@
+import { agentLabel } from "../lib/agent";
 import DotMatrix from "./DotMatrix";
 import { selectLiveSessions, useAgentStore, type AgentSession } from "../stores/agentStore";
-import type { AgentActivity, AgentKind } from "../lib/protocol";
+import type { AgentActivity } from "../lib/protocol";
 
 /** Header is 40 px; leave a little air so chips don't touch the border. */
 const CHIP_SIZE = 14;
 const CHIP_DOT = 2;
 const MAX_CHIPS = 4;
-
-function agentLabel(agent: AgentKind): string {
-  switch (agent) {
-    case "claudeCode":
-      return "Claude Code";
-    case "grok":
-      return "Grok";
-  }
-}
 
 function activityColor(activity: AgentActivity): string {
   switch (activity.kind) {
@@ -96,7 +88,7 @@ export default function AgentActivityCluster() {
       aria-label="Agent activity"
     >
       {shown.map((session) => (
-        <SessionChip key={session.id} session={session} />
+        <SessionChip key={`${session.agent}:${session.id}`} session={session} />
       ))}
       {overflow > 0 && (
         <span className="text-[11px] text-text-muted" title={`${overflow} more live sessions`}>

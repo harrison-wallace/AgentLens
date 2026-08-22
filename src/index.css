@@ -51,6 +51,10 @@
   --color-agent-idle: #6a6666;
   --color-agent-stale: #4a4646;
 
+  /* Agent identity — distinct from activity-state colours above */
+  --color-agent-claude: #c17f59;
+  --color-agent-grok: #7c8cff;
+
   /* Typography */
   --font-mono:
     "JetBrains Mono", "Geist Mono", "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Monaco,
@@ -100,6 +104,9 @@
   --color-agent-blocked: #d13b30;
   --color-agent-idle: #8f8a8a;
   --color-agent-stale: #b0aaaa;
+
+  --color-agent-claude: #a65b38;
+  --color-agent-grok: #3d4fd0;
 }
 
 /* Preview body text. A variable rather than a token because it is a user

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { selectLiveSessions, useAgentStore } from "../stores/agentStore";
 import { useGitStore } from "../stores/gitStore";
 import { usePreviewStore } from "../stores/previewStore";
 import { useTreeStore } from "../stores/treeStore";
@@ -81,6 +82,8 @@ export default function GitPanel() {
             </p>
           )}
 
+          <BurstGuard />
+
           <div className="min-h-0 flex-1 overflow-y-auto">
             <FileGroup
               label="Staged"
@@ -151,6 +154,39 @@ function StashAndSwitch({ dirty }: { dirty: boolean }) {
     >
       Stash and switch to {failedSwitch}
     </button>
+  );
+}
+
+/**
+ * Git writes wait out an agent burst so we do not stage half a turn.
+ * The action is held, not dropped; Run now is the escape hatch.
+ */
+function BurstGuard() {
+  const held = useGitStore((s) => s.held);
+  const overrideBurst = useGitStore((s) => s.overrideBurst);
+  const sessions = useAgentStore((s) => s.sessions);
+  const writing = selectLiveSessions(sessions).some(
+    (session) => session.activity.kind === "working",
+  );
+
+  if (!writing && held === 0) return null;
+
+  return (
+    <div className="flex items-start gap-2 border-b border-border px-2 py-1.5">
+      <p className="min-w-0 flex-1 text-xs text-text-muted">
+        Agent is writing. Git actions wait until it settles
+        {held > 0 ? ` · ${held} waiting` : ""}.
+      </p>
+      {held > 0 && (
+        <button
+          type="button"
+          onClick={overrideBurst}
+          className="shrink-0 text-[11px] text-accent hover:text-text"
+        >
+          Run now
+        </button>
+      )}
+    </div>
   );
 }
 

@@ -6,7 +6,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/harrison-wallace/AgentLens/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/harrison-wallace/AgentLens/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/actions/workflow/status/harrison-wallace/AgentLens/release.yml?style=flat-square&label=release)](https://github.com/harrison-wallace/AgentLens/actions/workflows/release.yml)
-[![Version](https://img.shields.io/badge/version-0.9.1-6366f1?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.10.0-6366f1?style=flat-square)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 
 [![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app)
@@ -20,7 +20,7 @@ read-only window into what your terminal coding agent (Claude Code, Grok, …)
 is doing to a directory: live file tree, change feed, git status, read-only
 previews. Runs on Windows and Ubuntu.
 
-**Status:** v0.9.1 — the MVP feature set is complete: agent attribution (the
+**Status:** v0.10.0 — the MVP feature set is complete: agent attribution (the
 thing AgentLens exists for), plus remote workspaces over WSL and SSH with no
 manual setup on the remote machine. Still pre-alpha: acceptance testing on
 Windows and Ubuntu is outstanding.
@@ -31,11 +31,14 @@ Windows and Ubuntu is outstanding.
 
 - **Agent attribution** — changes made by Claude Code or Grok are labelled
   with the tool call that made them and why, while your own edits stay
-  visibly unattributed. A live indicator in the header shows what each
-  session is doing right now — working, waiting on you, or idle — with one
-  chip per session when several are running at once.
+  visibly unattributed. Delegated subagent work is marked `sub`. A live
+  indicator in the header shows what each session is doing right now —
+  working, waiting on you, or idle — with one chip per session when several
+  are running at once. The session panel lists duration, tool-call count,
+  and files touched.
 - **Live file tree** — virtualized, lazy, gitignore-aware, with git status
-  badges and a fading highlight on whatever just changed.
+  badges, a fading highlight on whatever just changed, and filenames
+  coloured by the agent that last touched them.
 - **Activity feed** — filesystem changes grouped per debounced burst; filter
   and sort from the toolbar, click a row to reveal it in the tree. An
   `npm install` produces no feed spam. Session +/− totals live in the status
@@ -74,6 +77,10 @@ Windows and Ubuntu is outstanding.
 - **`Ctrl+P` file jump**, **`F11` fullscreen**, **`Ctrl` `+`/`−`/`0` zoom**
   (with an independent preview text size), arrow-key tree navigation,
   resizable and collapsible panels, and per-workspace extra ignore globs.
+- **OS notifications** — when an agent waits or finishes, and only while
+  AgentLens is unfocused. Switch it off in Settings.
+- **Tray tooltip** — live agent state at a glance without looking at the
+  window. Closing the window still quits.
 - **Quiet by design** — errors arrive as dismissible toasts with a copyable
   detail drawer, never a modal dialog; the window remembers its size and
   position; and a notify-only release check tells you a new version exists

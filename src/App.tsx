@@ -19,6 +19,7 @@ import {
   onGitStatus,
   onWatcherStatus,
 } from "./lib/events";
+import { startAgentAmbient } from "./lib/agentAmbient";
 import { formatLocation } from "./lib/location";
 import { quickPickOpen } from "./lib/quickPick";
 import { checkForUpdate } from "./lib/tauri";
@@ -165,6 +166,8 @@ export default function App() {
       void connection.then((unlisten) => unlisten());
     };
   }, []);
+
+  useEffect(() => startAgentAmbient(), []);
 
   // Global chrome keys: `Ctrl+P` file jump, `Ctrl+Shift+P` command palette,
   // `F1` / `Ctrl+/` shortcuts help, `F11` native fullscreen, `Ctrl +/-/0`

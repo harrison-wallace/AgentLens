@@ -180,4 +180,72 @@ describe("feedStore", () => {
     expect(entries[0].attributions["a.ts"]?.agent).toBe("grok");
     expect(entries[1].attributions["a.ts"]).toBeUndefined();
   });
+
+  it("stores sidechain on an attribution", () => {
+    const store = useFeedStore.getState();
+    store.addBatch([change("a.ts")]);
+    store.applyAttribution([
+      {
+        event: change("a.ts"),
+        attribution: {
+          sessionId: "s1",
+          agent: "claudeCode",
+          tool: "Edit",
+          summary: null,
+          viaCommand: false,
+          sidechain: true,
+        },
+      },
+    ]);
+    const after = useFeedStore.getState().entries[0];
+    expect(after?.kind).toBe("batch");
+    if (after?.kind !== "batch") return;
+    expect(after.attributions["a.ts"]?.sidechain).toBe(true);
+  });
+
+  it("records lastAgentByPath on attribution, keeps it on unattributed, clears on clear", () => {
+    const store = useFeedStore.getState();
+    store.addBatch([change("a.ts")]);
+    store.applyAttribution([
+      {
+        event: change("a.ts"),
+        attribution: {
+          sessionId: "s1",
+          agent: "claudeCode",
+          tool: "Edit",
+          summary: null,
+          viaCommand: false,
+        },
+      },
+    ]);
+    expect(useFeedStore.getState().lastAgentByPath["a.ts"]).toBe("claudeCode");
+
+    store.addBatch([change("b.ts")]);
+    expect(useFeedStore.getState().lastAgentByPath["a.ts"]).toBe("claudeCode");
+
+    store.applyAttribution([
+      {
+        event: change("a.ts"),
+        attribution: null,
+      },
+    ]);
+    expect(useFeedStore.getState().lastAgentByPath["a.ts"]).toBe("claudeCode");
+
+    store.applyAttribution([
+      {
+        event: change("a.ts"),
+        attribution: {
+          sessionId: "s2",
+          agent: "grok",
+          tool: "Write",
+          summary: null,
+          viaCommand: false,
+        },
+      },
+    ]);
+    expect(useFeedStore.getState().lastAgentByPath["a.ts"]).toBe("grok");
+
+    store.clear();
+    expect(useFeedStore.getState().lastAgentByPath).toEqual({});
+  });
 });

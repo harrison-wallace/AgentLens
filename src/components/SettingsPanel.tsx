@@ -32,6 +32,7 @@ export default function SettingsPanel() {
   const toggleShowAgentContext = useSettingsStore((s) => s.toggleShowAgentContext);
   const toggleAutoInstallDaemon = useSettingsStore((s) => s.toggleAutoInstallDaemon);
   const toggleCheckForUpdates = useSettingsStore((s) => s.toggleCheckForUpdates);
+  const toggleNotifyAgentState = useSettingsStore((s) => s.toggleNotifyAgentState);
   const setFeedMaxEntries = useSettingsStore((s) => s.setFeedMaxEntries);
 
   // Esc closes; there is nothing to lose by closing, since every control here
@@ -114,6 +115,13 @@ export default function SettingsPanel() {
             disabled={saving}
             onChange={() => void toggleCheckForUpdates()}
           />
+          <Toggle
+            label="Notify when an agent waits or finishes"
+            description="OS notification only while AgentLens is unfocused."
+            checked={app.notifyAgentState}
+            disabled={saving}
+            onChange={() => void toggleNotifyAgentState()}
+          />
           <ThemePicker />
           <UiZoom />
           <PreviewFontSize />
@@ -163,15 +171,18 @@ function AgentRoots() {
   const roots = useSettingsStore((s) => s.roots);
   const configured = useSettingsStore((s) => s.app.agentRoots);
   const setAgentRoots = useSettingsStore((s) => s.setAgentRoots);
+  const connection = useConnectionStore((s) => s.info);
   const listed = roots.filter((root) => root.path);
   const diagnostic = roots.find((root) => root.note && !root.path);
+  const host = connection.remote ? connection.label : "this machine";
 
   return (
     <div>
       <p className="text-xs font-medium text-text">Agent session folders</p>
       <p className="text-xs text-text-muted">
-        Searched for coding-agent sessions. Detected automatically; add your own if a profile lives
-        somewhere unusual.
+        Searched for coding-agent sessions on {host}. Detected automatically; add your own if a
+        profile lives somewhere unusual. Extra folders stay on this host and are not sent to another
+        machine.
       </p>
 
       <ul className="mt-1.5 space-y-0.5 rounded border border-border bg-surface p-2">

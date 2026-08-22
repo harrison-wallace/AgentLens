@@ -239,6 +239,9 @@ pub struct Attribution {
     /// True when claimed by a shell command rather than an explicit path —
     /// lower confidence, and the UI says so.
     pub via_command: bool,
+    /// True when the claiming tool call was delegated subagent work.
+    #[serde(default)]
+    pub sidechain: bool,
 }
 
 /// Lifecycle state of the filesystem watcher for the open workspace.
@@ -351,13 +354,16 @@ pub struct AppSettings {
     /// friends) whatever `.gitignore` says. App-level because "always show me
     /// `AGENTS.md`" is how you work, not a property of one repo.
     pub show_agent_context: bool,
-    /// Extra directories to search for agent sessions, added to whatever the
-    /// app detects by itself.
+    /// Extra directories to search for agent sessions on *this* backend's
+    /// machine, added to whatever the app detects by itself.
     ///
     /// Needed because detection can only ever be a guess: an agent's storage
     /// location is a convention its authors never promised, and where a user
     /// keeps multiple profiles is a convention on top of that. Anyone whose
     /// layout we can't guess has no other way to make the feature work.
+    ///
+    /// The desktop persists these per host and sends only the current
+    /// machine's list, so a local path is not pushed to a remote daemon.
     pub agent_roots: Vec<String>,
     /// What to run on the far side of a WSL or SSH connection.
     ///
@@ -385,10 +391,20 @@ pub struct AppSettings {
     /// Check GitHub for a newer release at startup. Notify-only — nothing is
     /// ever downloaded or installed.
     pub check_for_updates: bool,
+    /// OS notification when an agent waits or finishes. UI-only — backends
+    /// ignore this, same as `feed_max_entries` / `check_for_updates`.
+    /// Field-level default so an older store missing the key stays on,
+    /// matching `Default` — a bare `bool` would deserialize as false.
+    #[serde(default = "default_true")]
+    pub notify_agent_state: bool,
 }
 
 fn default_feed_max_entries() -> u32 {
     250
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for AppSettings {
@@ -400,6 +416,7 @@ impl Default for AppSettings {
             auto_install_daemon: true,
             feed_max_entries: default_feed_max_entries(),
             check_for_updates: true,
+            notify_agent_state: true,
         }
     }
 }
@@ -504,6 +521,9 @@ pub enum AgentEvent {
     /// the tool touched outside the workspace.
     ToolCall {
         session_id: String,
+        /// Absent on events from an older daemon of this protocol version.
+        #[serde(default)]
+        agent: Option<AgentKind>,
         at: i64,
         tool: String,
         /// One-line description of what the call was for, when derivable.
@@ -516,6 +536,8 @@ pub enum AgentEvent {
     /// the tool calls around it.
     AssistantNote {
         session_id: String,
+        #[serde(default)]
+        agent: Option<AgentKind>,
         at: i64,
         text: String,
     },
@@ -524,11 +546,15 @@ pub enum AgentEvent {
     /// these, and a no-op event would thrash it for nothing.
     ActivityChanged {
         session_id: String,
+        #[serde(default)]
+        agent: Option<AgentKind>,
         at: i64,
         activity: AgentActivity,
     },
     SessionEnded {
         session_id: String,
+        #[serde(default)]
+        agent: Option<AgentKind>,
         at: i64,
     },
 }
@@ -717,6 +743,18 @@ impl ConnectionTarget {
             ConnectionTarget::Ssh { host } => format!("SSH: {host}"),
         }
     }
+
+    /// Persistence key for settings that must not leak across machines.
+    ///
+    /// Extra agent-session folders are one of those: a path that is real on
+    /// this machine is noise inside a WSL distro or on an SSH host.
+    pub fn host_key(&self) -> String {
+        match self {
+            ConnectionTarget::Local => "local".to_string(),
+            ConnectionTarget::Wsl { distro } => format!("wsl:{distro}"),
+            ConnectionTarget::Ssh { host } => format!("ssh:{host}"),
+        }
+    }
 }
 
 /// Liveness of the current backend connection.
@@ -803,6 +841,57 @@ pub const EVENT_HEARTBEAT: &str = "heartbeat";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_notify_agent_state_defaults_on() {
+        let settings: AppSettings = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(settings.notify_agent_state);
+    }
+
+    #[test]
+    fn host_key_is_stable_and_distinct_per_machine() {
+        assert_eq!(ConnectionTarget::Local.host_key(), "local");
+        assert_eq!(
+            ConnectionTarget::Wsl {
+                distro: "Ubuntu".into()
+            }
+            .host_key(),
+            "wsl:Ubuntu"
+        );
+        assert_eq!(
+            ConnectionTarget::Ssh { host: "box".into() }.host_key(),
+            "ssh:box"
+        );
+        assert_ne!(
+            ConnectionTarget::Ssh { host: "a".into() }.host_key(),
+            ConnectionTarget::Ssh { host: "b".into() }.host_key()
+        );
+    }
+
+    #[test]
+    fn an_older_tool_call_without_agent_still_deserializes() {
+        let current = AgentEvent::ToolCall {
+            session_id: "s1".into(),
+            agent: Some(AgentKind::ClaudeCode),
+            at: 1,
+            tool: "Edit".into(),
+            summary: None,
+            paths: vec!["a.rs".into()],
+            sidechain: false,
+        };
+        let mut json = serde_json::to_value(&current).unwrap();
+        json.as_object_mut().unwrap().remove("agent");
+        let event: AgentEvent = serde_json::from_value(json).unwrap();
+        match event {
+            AgentEvent::ToolCall {
+                session_id, agent, ..
+            } => {
+                assert_eq!(session_id, "s1");
+                assert_eq!(agent, None);
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
+    }
 
     #[test]
     fn app_info_serializes_with_camel_case_fields() {

@@ -457,6 +457,7 @@ impl Grok {
                 };
                 out.push(AgentEvent::ToolCall {
                     session_id: session_id.clone(),
+                    agent: Some(AgentKind::Grok),
                     at,
                     tool,
                     summary: None,
@@ -529,6 +530,7 @@ impl Grok {
             .insert(session_id.to_string(), activity.clone());
         Some(AgentEvent::ActivityChanged {
             session_id: session_id.to_string(),
+            agent: Some(AgentKind::Grok),
             at,
             activity,
         })

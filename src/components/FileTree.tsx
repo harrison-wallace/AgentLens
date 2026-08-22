@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { useFeedStore } from "../stores/feedStore";
 import { useGitStore } from "../stores/gitStore";
 import { usePreviewStore } from "../stores/previewStore";
 import { useSettingsStore } from "../stores/settingsStore";
 import { useTreeStore } from "../stores/treeStore";
+import { agentTextClass } from "../lib/agent";
 import { flattenTree, gitBadgeFor, rollUpHidden, type TreeRow } from "../lib/treeRows";
 import type { GitStatusKind, PinnedEntry } from "../lib/protocol";
 
@@ -36,6 +38,7 @@ export default function FileTree() {
   const select = useTreeStore((s) => s.select);
   const recentlyChanged = useTreeStore((s) => s.recentlyChanged);
   const statusByPath = useGitStore((s) => s.statusByPath);
+  const lastAgentByPath = useFeedStore((s) => s.lastAgentByPath);
   const openTabs = usePreviewStore((s) => s.tabs);
   const openPaths = useMemo(() => new Set(openTabs.map((t) => t.path)), [openTabs]);
   const pinnedPaths = useSettingsStore((s) => s.settings.pinned);
@@ -226,6 +229,7 @@ export default function FileTree() {
             const isOpen = !row.isDir && openPaths.has(row.path);
             const isRecentlyChanged = row.path in recentlyChanged;
             const isPinned = pinned.has(row.path);
+            const lastAgent = lastAgentByPath[row.path];
             const statusKind = statusByPath[row.path];
             const badge = gitBadgeFor(row.path, statusByPath);
             // Only ever non-zero on a row hiding something: a row whose own
@@ -276,7 +280,7 @@ export default function FileTree() {
                 )}
                 <span
                   className={`min-w-0 flex-1 truncate ${isLoading ? "opacity-50" : ""} ${
-                    row.ignored ? "text-text-ash" : ""
+                    row.ignored ? "text-text-ash" : lastAgent ? agentTextClass(lastAgent) : ""
                   }`}
                   title={row.ignored ? `${row.path} — ignored by git` : undefined}
                 >

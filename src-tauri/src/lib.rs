@@ -22,6 +22,8 @@ use backend::child::ChildProcess;
 use backend::{Backend, BackendState, InProcess};
 use events::TauriEvents;
 use serde_json::Value;
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 
@@ -364,7 +366,8 @@ fn set_app_settings(
     state: State<BackendState>,
     app: AppHandle,
 ) -> CommandResult<Value> {
-    settings::save_app(&app, &value)?;
+    let target = state.current()?.info().target;
+    settings::save_app_for(&app, &target, &value)?;
     send(&state, Command::SetAppSettings { value })
 }
 
@@ -416,6 +419,55 @@ fn connection(state: State<BackendState>) -> CommandResult<ConnectionInfo> {
     Ok(state.current()?.info())
 }
 
+/// Update the tray tooltip. Errors (no tray, Linux) are ignored.
+#[tauri::command]
+fn set_tray_status(app: AppHandle, text: String) {
+    if let Some(tray) = app.tray_by_id("main") {
+        let _ = tray.set_tooltip(Some(text.as_str()));
+    }
+}
+
+fn show_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+fn install_tray(app: &tauri::App) -> tauri::Result<()> {
+    let show = MenuItem::with_id(app, "show", "Show AgentLens", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &quit])?;
+
+    let mut builder = TrayIconBuilder::with_id("main")
+        .tooltip("AgentLens")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => show_main_window(app),
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+    // Keep the handle so drop does not remove the icon.
+    let tray = builder.build(app)?;
+    app.manage(tray);
+    Ok(())
+}
+
 /// Point the app at another machine without opening anything yet.
 ///
 /// Needed because the folder picker has to *browse* that machine before a
@@ -444,7 +496,7 @@ fn connect_to(
     app: &AppHandle,
 ) -> CommandResult<ConnectionInfo> {
     let events = Arc::new(TauriEvents(app.clone()));
-    let stored = settings::load_app(app);
+    let stored = settings::load_app_for(app, &target);
 
     let backend: Arc<dyn Backend> = match &target {
         ConnectionTarget::Local => Arc::new(InProcess::new(events)),
@@ -471,6 +523,7 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             get_app_info,
             check_for_update,
@@ -511,6 +564,7 @@ pub fn run() {
             connect,
             disconnect,
             wsl_distros,
+            set_tray_status,
         ])
         .setup(|app| {
             let window = app
@@ -527,10 +581,11 @@ pub fn run() {
             let local: Arc<dyn Backend> = Arc::new(InProcess::new(events));
             local
                 .send(Command::SetAppSettings {
-                    value: settings::load_app(app.handle()),
+                    value: settings::load_app_for(app.handle(), &ConnectionTarget::Local),
                 })
                 .map_err(std::io::Error::other)?;
             app.manage(BackendState::new(local));
+            install_tray(app)?;
             Ok(())
         })
         .build(tauri::generate_context!())

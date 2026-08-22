@@ -19,6 +19,16 @@ import type {
   GitStatusKind,
   GitStatusSnapshot,
 } from "../lib/protocol";
+import { selectLiveSessions, useAgentStore } from "./agentStore";
+
+/** Quiet period after the last `working` session before a held mutation runs. */
+export const BURST_QUIET_MS = 1_000;
+
+function bursting(): boolean {
+  return selectLiveSessions(useAgentStore.getState().sessions).some(
+    (session) => session.activity.kind === "working",
+  );
+}
 
 /**
  * One badge kind per path, for the tree.
@@ -66,6 +76,11 @@ interface GitStore {
    * fix instead of only describing it. Cleared by the next mutation.
    */
   failedSwitch: string | null;
+  /**
+   * Mutations waiting for an agent burst to settle. Deferred, not dropped —
+   * a commit mid-write still lands once the tree stops moving.
+   */
+  held: number;
   refresh: () => Promise<void>;
   refreshCapabilities: () => Promise<void>;
   refreshBranches: () => Promise<void>;
@@ -83,6 +98,8 @@ interface GitStore {
   createBranch: (name: string) => Promise<boolean>;
   stashPush: (message?: string) => Promise<boolean>;
   stashPop: () => Promise<boolean>;
+  /** Run held mutations now, even if an agent is still writing. */
+  overrideBurst: () => void;
   dismissError: () => void;
   reset: () => void;
 }
@@ -99,7 +116,23 @@ type Setter = (patch: Partial<GitStore>) => void;
  */
 let pending: Promise<void> = Promise.resolve();
 
-async function mutate(set: Setter, op: () => Promise<GitStatusSnapshot>): Promise<boolean> {
+type HeldOp = {
+  op: () => Promise<GitStatusSnapshot>;
+  resolve: (ok: boolean) => void;
+};
+
+let heldOps: HeldOp[] = [];
+let quietTimer: ReturnType<typeof setTimeout> | null = null;
+let runThroughBurst = false;
+
+function clearQuietTimer() {
+  if (quietTimer !== null) {
+    clearTimeout(quietTimer);
+    quietTimer = null;
+  }
+}
+
+function enqueueAttempt(set: Setter, op: () => Promise<GitStatusSnapshot>): Promise<boolean> {
   const run = pending.then(
     () => attempt(set, op),
     () => attempt(set, op),
@@ -110,6 +143,42 @@ async function mutate(set: Setter, op: () => Promise<GitStatusSnapshot>): Promis
   );
   return run;
 }
+
+function flushHeld(set: Setter) {
+  if (!runThroughBurst && bursting()) return;
+  const queue = heldOps;
+  heldOps = [];
+  set({ held: 0 });
+  for (const item of queue) {
+    void enqueueAttempt(set, item.op).then(item.resolve);
+  }
+}
+
+function mutate(set: Setter, op: () => Promise<GitStatusSnapshot>): Promise<boolean> {
+  if (!runThroughBurst && bursting()) {
+    return new Promise((resolve) => {
+      heldOps.push({ op, resolve });
+      set({ held: heldOps.length });
+    });
+  }
+  return enqueueAttempt(set, op);
+}
+
+useAgentStore.subscribe(() => {
+  if (bursting()) {
+    clearQuietTimer();
+    return;
+  }
+  // Run-now lasts for this burst only, so a stash-then-switch in the same
+  // call still goes through, then holding resumes on the next burst.
+  runThroughBurst = false;
+  if (heldOps.length === 0) return;
+  clearQuietTimer();
+  quietTimer = setTimeout(() => {
+    quietTimer = null;
+    flushHeld(useGitStore.setState);
+  }, BURST_QUIET_MS);
+});
 
 async function attempt(set: Setter, op: () => Promise<GitStatusSnapshot>): Promise<boolean> {
   set({ busy: true, error: null, failedSwitch: null });
@@ -131,6 +200,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
   busy: false,
   error: null,
   failedSwitch: null,
+  held: 0,
 
   refresh: async () => {
     try {
@@ -203,9 +273,19 @@ export const useGitStore = create<GitStore>((set, get) => ({
   stashPush: (message) => mutate(set, () => gitStashPush(message)),
   stashPop: () => mutate(set, () => gitStashPop()),
 
+  overrideBurst: () => {
+    runThroughBurst = true;
+    clearQuietTimer();
+    flushHeld(set);
+  },
+
   dismissError: () => set({ error: null, failedSwitch: null }),
 
-  reset: () =>
+  reset: () => {
+    clearQuietTimer();
+    for (const item of heldOps) item.resolve(false);
+    heldOps = [];
+    runThroughBurst = false;
     set({
       status: null,
       statusByPath: {},
@@ -214,5 +294,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
       busy: false,
       error: null,
       failedSwitch: null,
-    }),
+      held: 0,
+    });
+  },
 }));

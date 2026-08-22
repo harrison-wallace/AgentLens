@@ -15,6 +15,7 @@ const backend = {
     autoInstallDaemon: true,
     feedMaxEntries: 250,
     checkForUpdates: true,
+    notifyAgentState: true,
   } as AppSettings,
 };
 
@@ -61,6 +62,7 @@ describe("settingsStore", () => {
       autoInstallDaemon: true,
       feedMaxEntries: 250,
       checkForUpdates: true,
+      notifyAgentState: true,
     };
     useSettingsStore.setState({
       settings: { extraIgnores: [], showIgnored: false, pinned: [] },
@@ -71,6 +73,7 @@ describe("settingsStore", () => {
         autoInstallDaemon: true,
         feedMaxEntries: 250,
         checkForUpdates: true,
+        notifyAgentState: true,
       },
       pins: [],
       error: null,
@@ -106,6 +109,7 @@ describe("settingsStore", () => {
       autoInstallDaemon: true,
       feedMaxEntries: 250,
       checkForUpdates: true,
+      notifyAgentState: true,
     });
     // The workspace write must not have carried the app setting with it.
     expect(backend.workspace.pinned).toEqual(["notes.md"]);
@@ -165,5 +169,12 @@ describe("settingsStore", () => {
     expect(useSettingsStore.getState().error).toBe("disk full");
     expect(useSettingsStore.getState().settings.pinned).toEqual([]);
     expect(useSettingsStore.getState().saving).toBe(false);
+  });
+
+  it("round-trips notifyAgentState like other app toggles", async () => {
+    expect(useSettingsStore.getState().app.notifyAgentState).toBe(true);
+    expect(await useSettingsStore.getState().toggleNotifyAgentState()).toBe(true);
+    expect(backend.app.notifyAgentState).toBe(false);
+    expect(useSettingsStore.getState().app.notifyAgentState).toBe(false);
   });
 });

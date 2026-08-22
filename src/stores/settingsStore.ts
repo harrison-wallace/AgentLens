@@ -26,6 +26,7 @@ const EMPTY_APP: AppSettings = {
   autoInstallDaemon: true,
   feedMaxEntries: DEFAULT_FEED_MAX_ENTRIES,
   checkForUpdates: true,
+  notifyAgentState: true,
 };
 
 /** Normalize app settings from disk (older stores may omit new fields). */
@@ -68,6 +69,8 @@ interface SettingsStore {
   toggleAutoInstallDaemon: () => Promise<boolean>;
   /** Flips the startup release check (notify-only). */
   toggleCheckForUpdates: () => Promise<boolean>;
+  /** Flips OS notifications when an agent waits or finishes. */
+  toggleNotifyAgentState: () => Promise<boolean>;
   /** How many activity-feed batches to keep (oldest drop). App-wide. */
   setFeedMaxEntries: (max: number) => Promise<boolean>;
   /** Pins `path` if it isn't already, unpins it if it is. */
@@ -233,6 +236,16 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         await setAppSettings({
           ...get().app,
           checkForUpdates: !get().app.checkForUpdates,
+        }),
+      ),
+    })),
+
+  toggleNotifyAgentState: async () =>
+    persist(set, async () => ({
+      app: normalizeApp(
+        await setAppSettings({
+          ...get().app,
+          notifyAgentState: !get().app.notifyAgentState,
         }),
       ),
     })),

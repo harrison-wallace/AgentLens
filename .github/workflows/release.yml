@@ -9,7 +9,24 @@ permissions:
   contents: write
 
 jobs:
+  # One draft, created first. GitHub lets several drafts share a tag, and
+  # tauri-action looks releases up by tag — an API that does not return
+  # drafts. If the installer jobs create the release themselves they each
+  # open a new draft, and the installers never land next to the daemons.
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "AgentLens ${{ github.ref_name }}"
+          body: "See CHANGELOG.md for details."
+          draft: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   release:
+    needs: create-release
     strategy:
       fail-fast: false
       matrix:
@@ -39,15 +56,34 @@ jobs:
 
       - run: npm ci
 
+      # Build only. Omit tagName so tauri-action does not open another draft.
       - uses: tauri-apps/tauri-action@v0
+
+      - name: Upload Linux installers
+        if: matrix.os == 'ubuntu-22.04'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          draft: true
+          fail_on_unmatched_files: true
+          files: |
+            target/release/bundle/deb/AgentLens_*.deb
+            target/release/bundle/appimage/AgentLens_*.AppImage
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Windows installers
+        if: matrix.os == 'windows-latest'
+        uses: softprops/action-gh-release@v2
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "AgentLens ${{ github.ref_name }}"
-          releaseBody: "See CHANGELOG.md for details."
-          releaseDraft: true
-          prerelease: false
+          tag_name: ${{ github.ref_name }}
+          draft: true
+          fail_on_unmatched_files: true
+          files: |
+            target/release/bundle/nsis/AgentLens_*-setup.exe
+            target/release/bundle/msi/AgentLens_*.msi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # The daemon is not part of any installer: it is downloaded straight onto the
   # machine holding the files (a WSL distro, an SSH host), which is usually not
@@ -59,6 +95,7 @@ jobs:
   # compatible, not forwards, so the oldest one we build on is the oldest
   # distro the binary works in.
   daemon:
+    needs: create-release
     strategy:
       fail-fast: false
       matrix:

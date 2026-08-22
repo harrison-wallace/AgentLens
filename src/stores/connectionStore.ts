@@ -1,6 +1,8 @@
 import { create } from "zustand";
+import { shouldRefreshHostSettings } from "../lib/location";
 import { connection, disconnect, wslDistros } from "../lib/tauri";
 import type { ConnectionInfo } from "../lib/protocol";
+import { useSettingsStore } from "./settingsStore";
 
 /** Until the first read lands. The app always starts observing this machine. */
 const LOCAL: ConnectionInfo = {
@@ -35,17 +37,17 @@ interface ConnectionStore {
   apply: (info: ConnectionInfo) => void;
 }
 
-export const useConnectionStore = create<ConnectionStore>((set) => ({
+export const useConnectionStore = create<ConnectionStore>((set, get) => ({
   info: LOCAL,
   distros: [],
 
   refresh: async () => {
     try {
-      set({ info: await connection() });
+      get().apply(await connection());
     } catch {
       // No backend to ask (a plain browser, say) — local is the honest
       // assumption rather than a scary banner.
-      set({ info: LOCAL });
+      get().apply(LOCAL);
     }
   },
 
@@ -59,7 +61,7 @@ export const useConnectionStore = create<ConnectionStore>((set) => ({
 
   goLocal: async () => {
     try {
-      set({ info: await disconnect() });
+      get().apply(await disconnect());
     } catch {
       // Going local is the fallback, so there is nowhere sensible to fall
       // back to. Re-read instead of guessing, and let the status bar show
@@ -68,5 +70,13 @@ export const useConnectionStore = create<ConnectionStore>((set) => ({
     }
   },
 
-  apply: (info) => set({ info }),
+  apply: (info) => {
+    const prev = get().info;
+    set({ info });
+    // Wait until Connected: earlier events name the new machine while the
+    // previous backend is still the one GetAppSettings would hit.
+    if (shouldRefreshHostSettings(prev, info)) {
+      void useSettingsStore.getState().refreshApp();
+    }
+  },
 }));
